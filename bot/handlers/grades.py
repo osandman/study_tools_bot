@@ -3,10 +3,9 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from database.models.subject import Subject
-from database.models.grade import Grade, GRADE_TYPES
+from database.models.grade import Grade
 
 router = Router()
 
@@ -16,9 +15,11 @@ router = Router()
 @router.message(Command("grades"))
 async def cmd_grades(message: types.Message, session: AsyncSession):
     """Show all subjects with average grades."""
+    user_id = await get_user_id(session, message.from_user.id)
+
     result = await session.execute(
         select(Subject)
-        .where(Subject.user_id == (await get_user_id(session, message.from_user.id)))
+        .where(Subject.user_id == user_id)
         .order_by(Subject.sort_order, Subject.name)
     )
     subjects = result.scalars().all()
@@ -26,8 +27,6 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
     if not subjects:
         await message.answer("📚 У тебя пока нет предметов. Добавь через /subjects")
         return
-
-    user_id = await get_user_id(session, message.from_user.id)
 
     text = "📊 <b>Твои оценки</b>\n\n"
     kb = InlineKeyboardBuilder()
@@ -64,7 +63,6 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     subject_id = int(callback.data.split(":")[1])
     user_id = await get_user_id(session, callback.from_user.id)
 
-    # Get subject
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id)
     )
@@ -74,7 +72,6 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
         await callback.answer("Предмет не найден", show_alert=True)
         return
 
-    # Get grades
     grades_result = await session.execute(
         select(Grade)
         .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
@@ -83,7 +80,6 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     )
     grades = grades_result.scalars().all()
 
-    # Calculate average
     avg_result = await session.execute(
         select(func.avg(Grade.value))
         .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
@@ -99,13 +95,10 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
 
     if grades:
         for g in grades:
-            type_label = GRADE_TYPES.get(g.grade_type, g.grade_type)
-            desc_text = f" — {g.description}" if g.description else ""
-            text += f"  {type_label}: <b>{g.value}</b>{desc_text} ({g.date.strftime('%d.%m')})\n"
+            text += f"  <b>{g.value}</b>\n"
     else:
         text += "  Пока пусто\n"
 
-    # Buttons
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить оценку", callback_data=f"add_grade:{subject_id}")
     if grades:
@@ -149,9 +142,7 @@ async def cb_del_grade_list(callback: types.CallbackQuery, session: AsyncSession
     kb = InlineKeyboardBuilder()
 
     for g in grades:
-        type_label = GRADE_TYPES.get(g.grade_type, g.grade_type)
-        label = f"{g.value} · {type_label} · {g.date.strftime('%d.%m')}"
-        kb.button(text=label, callback_data=f"del_grade_confirm:{g.id}:{subject_id}")
+        kb.button(text=str(g.value), callback_data=f"del_grade_confirm:{g.id}:{subject_id}")
 
     kb.button(text="❌ Отмена", callback_data=f"subject:{subject_id}")
     kb.adjust(1)
@@ -185,7 +176,6 @@ async def cb_del_grade_confirm(callback: types.CallbackQuery, session: AsyncSess
 
     await callback.answer(f"🗑 Удалена оценка {value}", show_alert=True)
 
-    # Refresh subject view
     await cb_subject_grades(
         types.CallbackQuery(
             id=callback.id,
@@ -198,15 +188,14 @@ async def cb_del_grade_confirm(callback: types.CallbackQuery, session: AsyncSess
     )
 
 
-# ─── Добавление оценки — выбор типа ────────────────────────────────────────
+# ─── Добавление оценки — выбор значения ────────────────────────────────────
 
 @router.callback_query(F.data.startswith("add_grade:"))
-async def cb_add_grade_type(callback: types.CallbackQuery, session: AsyncSession):
-    """Show grade type selection."""
+async def cb_add_grade_value(callback: types.CallbackQuery, session: AsyncSession):
+    """Show grade value selection (1-5)."""
     subject_id = int(callback.data.split(":")[1])
     user_id = await get_user_id(session, callback.from_user.id)
 
-    # Verify subject belongs to user
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id)
     )
@@ -216,38 +205,14 @@ async def cb_add_grade_type(callback: types.CallbackQuery, session: AsyncSession
         return
 
     kb = InlineKeyboardBuilder()
-    for key, label in GRADE_TYPES.items():
-        kb.button(text=label, callback_data=f"grade_type:{subject_id}:{key}")
-    kb.button(text="❌ Отмена", callback_data=f"subject:{subject_id}")
-    kb.adjust(2)
-
-    await callback.message.edit_text(
-        f"📝 Тип оценки по <b>{subject.name}</b>:",
-        reply_markup=kb.as_markup()
-    )
-    await callback.answer()
-
-
-# ─── Добавление оценки — выбор значения ────────────────────────────────────
-
-@router.callback_query(F.data.startswith("grade_type:"))
-async def cb_add_grade_value(callback: types.CallbackQuery, session: AsyncSession):
-    """Show grade value selection (1-5)."""
-    parts = callback.data.split(":")
-    subject_id = int(parts[1])
-    grade_type = parts[2]
-
-    type_label = GRADE_TYPES.get(grade_type, grade_type)
-
-    kb = InlineKeyboardBuilder()
     for val in range(1, 6):
         emoji = ["😞", "😐", "🙂", "😊", "🤩"][val - 1]
-        kb.button(text=f"{emoji} {val}", callback_data=f"grade_val:{subject_id}:{grade_type}:{val}")
+        kb.button(text=f"{emoji} {val}", callback_data=f"grade_val:{subject_id}:{val}")
     kb.button(text="❌ Отмена", callback_data=f"subject:{subject_id}")
     kb.adjust(5, 1)
 
     await callback.message.edit_text(
-        f"Оценка ({type_label}):",
+        f"📝 Оценка по <b>{subject.name}</b>",
         reply_markup=kb.as_markup()
     )
     await callback.answer()
@@ -260,29 +225,24 @@ async def cb_save_grade(callback: types.CallbackQuery, session: AsyncSession):
     """Save the grade."""
     parts = callback.data.split(":")
     subject_id = int(parts[1])
-    grade_type = parts[2]
-    value = int(parts[3])
+    value = int(parts[2])
     user_id = await get_user_id(session, callback.from_user.id)
 
     grade = Grade(
         user_id=user_id,
         subject_id=subject_id,
         value=value,
-        grade_type=grade_type,
+        grade_type="other",
     )
     session.add(grade)
     await session.commit()
 
-    # Get subject name
     result = await session.execute(select(Subject.name).where(Subject.id == subject_id))
     subject_name = result.scalar()
 
-    type_label = GRADE_TYPES.get(grade_type, grade_type)
     emoji = ["😞", "😐", "🙂", "😊", "🤩"][value - 1]
+    await callback.answer(f"✅ {emoji} {value} по {subject_name}", show_alert=True)
 
-    await callback.answer(f"✅ {emoji} {value} — {type_label} по {subject_name}", show_alert=True)
-
-    # Refresh subject view
     await cb_subject_grades(
         types.CallbackQuery(
             id=callback.id,
@@ -349,7 +309,6 @@ async def cmd_gpa(message: types.Message, session: AsyncSession):
 
 # ─── /subjects — управление предметами ────────────────────────────────────
 
-# In-memory state for pending renames (telegram_id -> subject_id)
 _pending_renames: dict[int, int] = {}
 
 
@@ -394,7 +353,6 @@ async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Предмет не найден", show_alert=True)
         return
 
-    # Count grades
     count_result = await session.execute(
         select(func.count(Grade.id))
         .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
@@ -485,7 +443,6 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
 
     await callback.answer(f"🗑 Удалён: {name}", show_alert=True)
 
-    # Go back to subjects list
     await cb_back_to_subjects(
         types.CallbackQuery(
             id=callback.id,
@@ -515,7 +472,7 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
     """Handle rename or new subject input."""
     pending = _pending_renames.pop(message.from_user.id, None)
     if pending is None:
-        return  # Not waiting for input, ignore
+        return
 
     text = message.text.strip()
     if len(text) > 100 or len(text) < 2:
@@ -525,7 +482,6 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
     user_id = await get_user_id(session, message.from_user.id)
 
     if pending == -1:
-        # Adding new subject
         result = await session.execute(
             select(Subject).where(Subject.user_id == user_id, Subject.name.ilike(text))
         )
@@ -543,7 +499,6 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
         await session.commit()
         await message.answer(f"✅ Предмет «{text}» добавлен!\n\nСписок: /subjects")
     else:
-        # Renaming existing subject
         result = await session.execute(
             select(Subject).where(Subject.id == pending, Subject.user_id == user_id)
         )
@@ -552,7 +507,6 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
             await message.answer("❌ Предмет не найден.")
             return
 
-        # Check for duplicate name
         dup_result = await session.execute(
             select(Subject).where(
                 Subject.user_id == user_id,
