@@ -263,35 +263,32 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     new_total = sum(ad.values())
     exist_total = sum(ex.values())
 
-    text = f"➕ <b>{subject_name}</b>\n\n"
-
+    text = f"➕ <b>{subject_name}</b>\n"
     if exist_total > 0:
-        text += f"Уже есть: {ex[5]}·5 {ex[4]}·4 {ex[3]}·3 {ex[2]}·2 {ex[1]}·1\n\n"
-
-    text += "Укажи сколько ДОБАВИТЬ:\n\n"
-
-    for val in [5, 4, 3, 2, 1]:
-        emoji = ["🤩", "😊", "🙂", "😐", "😞"][val - 1]
-        marker = f"+{ad[val]}" if ad[val] > 0 else "—"
-        text += f"  {emoji} <b>{val}</b>: {marker}\n"
-
-    text += f"\nДобавляется: <b>{new_total}</b>"
-    if exist_total > 0:
-        text += f" | Итого будет: <b>{exist_total + new_total}</b>"
+        text += f"Уже есть: <b>{exist_total}</b>\n\n"
+    else:
+        text += "\n"
 
     kb = InlineKeyboardBuilder()
-    for val in [5, 4, 3, 2, 1]:
-        kb.button(text="−", callback_data=f"cnt:{val}:-")
-        kb.button(text=str(val), callback_data="cnt:noop")
-        kb.button(text="+", callback_data=f"cnt:{val}:+")
 
+    # Header row: existing counts
+    kb.button(text="Есть", callback_data="cnt:noop")
+    for val in [5, 4, 3, 2, 1]:
+        kb.button(text=str(ex[val]), callback_data="cnt:noop")
+
+    # Add row: new counts
+    kb.button(text="+ ещё", callback_data="cnt:noop")
+    for val in [5, 4, 3, 2, 1]:
+        kb.button(text=f"+{ad[val]}" if ad[val] > 0 else "0", callback_data=f"cnt:{val}:+")
+
+    # Action buttons
     if new_total > 0:
         kb.button(text=f"✅ Добавить ({new_total})", callback_data="cnt:save")
         kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-        kb.adjust(3, 3, 3, 3, 3, 2, 1)
+        kb.adjust(6, 6, 2, 1)
     else:
         kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-        kb.adjust(3, 3, 3, 3, 3, 1)
+        kb.adjust(6, 6, 1)
 
     await message.edit_text(text, reply_markup=kb.as_markup())
 
