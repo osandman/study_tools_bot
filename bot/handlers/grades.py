@@ -289,13 +289,13 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     for val in [1, 2, 3, 4, 5]:
         kb.button(text="−", callback_data=f"cnt:{val}:-")
 
+    # Save always visible
     if new_total != 0:
         kb.button(text=f"✅ Сохранить ({'+' if new_total > 0 else ''}{new_total})", callback_data="cnt:save")
-        kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-        kb.adjust(5, 5, 5, 5, 2, 1)
     else:
-        kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-        kb.adjust(5, 5, 5, 5, 1)
+        kb.button(text="💾 Сохранить", callback_data="cnt:noop")
+    kb.button(text="❌ Отмена", callback_data="cnt:cancel")
+    kb.adjust(5, 5, 5, 5, 2, 1)
 
     await message.edit_text(text, reply_markup=kb.as_markup())
 
@@ -394,8 +394,11 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
     if val in state["add"]:
         if direction == "+":
             state["add"][val] += 1
-        elif direction == "-" and state["add"][val] > 0:
-            state["add"][val] -= 1
+        elif direction == "-":
+            ex_val = state["existing"][val]
+            ad_val = state["add"][val]
+            if ex_val + ad_val > 0:  # can't go below 0 total
+                state["add"][val] -= 1
 
     result = await session.execute(
         select(Subject.name).where(Subject.id == state["subject_id"])
