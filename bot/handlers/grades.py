@@ -262,6 +262,7 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     ad = state["add"]
     new_total = sum(ad.values())
     exist_total = sum(ex.values())
+    has_changes = any(v != 0 for v in ad.values())
 
     text = f"➕ <b>{subject_name}</b>\n"
     if exist_total > 0:
@@ -290,8 +291,16 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
         kb.button(text="−", callback_data=f"cnt:{val}:-")
 
     # Save always visible
-    if new_total != 0:
-        kb.button(text=f"✅ Сохранить ({'+' if new_total > 0 else ''}{new_total})", callback_data="cnt:save")
+    if has_changes:
+        parts = []
+        added = sum(v for v in ad.values() if v > 0)
+        removed = sum(abs(v) for v in ad.values() if v < 0)
+        if added:
+            parts.append(f"+{added}")
+        if removed:
+            parts.append(f"−{removed}")
+        label = f"✅ Сохранить ({', '.join(parts)})"
+        kb.button(text=label, callback_data="cnt:save")
     else:
         kb.button(text="💾 Сохранить", callback_data="cnt:noop")
     kb.button(text="❌ Отмена", callback_data="cnt:cancel")
