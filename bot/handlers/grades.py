@@ -111,7 +111,7 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
         marker = "• " if p_key == period else ""
         kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
 
-    kb.adjust(2, len(periods))
+    kb.adjust(*[2] * ((len(subjects) + 1) // 2), len(periods))
     await message.answer(text, reply_markup=kb.as_markup())
 
 
@@ -154,7 +154,7 @@ async def cb_grades_period(callback: types.CallbackQuery, session: AsyncSession)
         marker = "• " if p_key == period else ""
         kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
 
-    kb.adjust(2, len(periods))
+    kb.adjust(*[2] * ((len(subjects) + 1) // 2), len(periods))
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await callback.answer()
 
@@ -211,7 +211,14 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
         kb.button(text=f"{marker}{p_label}", callback_data=f"subject:{subject_id}:{p_key}")
 
     kb.button(text="⬅️ Назад", callback_data="back_to_grades")
-    kb.adjust(1, 1 if total > 0 else 0, len(periods), 1)
+
+    # Layout: action buttons (1 per row), then period buttons (N per row), then back
+    row_sizes = [1]  # add button
+    if total > 0:
+        row_sizes.append(1)  # reset button
+    row_sizes.append(len(periods))  # period buttons
+    row_sizes.append(1)  # back button
+    kb.adjust(*row_sizes)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await callback.answer()
