@@ -105,14 +105,97 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     else:
         text += "  Пока пусто\n"
 
-    # Button to add grade
+    # Buttons
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить оценку", callback_data=f"add_grade:{subject_id}")
+    if grades:
+        kb.button(text="🗑 Удалить оценку", callback_data=f"del_grade_list:{subject_id}")
     kb.button(text="⬅️ Назад", callback_data="back_to_grades")
     kb.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await callback.answer()
+
+
+# ─── Удаление оценки — список ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("del_grade_list:"))
+async def cb_del_grade_list(callback: types.CallbackQuery, session: AsyncSession):
+    """Show grades with delete buttons."""
+    subject_id = int(callback.data.split(":")[1])
+    user_id = await get_user_id(session, callback.from_user.id)
+
+    result = await session.execute(
+        select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id)
+    )
+    subject = result.scalar_one_or_none()
+    if not subject:
+        await callback.answer("Предмет не найден", show_alert=True)
+        return
+
+    grades_result = await session.execute(
+        select(Grade)
+        .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
+        .order_by(desc(Grade.date), desc(Grade.created_at))
+        .limit(25)
+    )
+    grades = grades_result.scalars().all()
+
+    if not grades:
+        await callback.answer("Нет оценок для удаления", show_alert=True)
+        return
+
+    text = f"🗑 <b>Удалить оценку ({subject.name})</b>\nНажми на оценку, чтобы удалить:\n\n"
+    kb = InlineKeyboardBuilder()
+
+    for g in grades:
+        type_label = GRADE_TYPES.get(g.grade_type, g.grade_type)
+        label = f"{g.value} · {type_label} · {g.date.strftime('%d.%m')}"
+        kb.button(text=label, callback_data=f"del_grade_confirm:{g.id}:{subject_id}")
+
+    kb.button(text="❌ Отмена", callback_data=f"subject:{subject_id}")
+    kb.adjust(1)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+# ─── Удаление оценки — подтверждение ──────────────────────────────────────
+
+@router.callback_query(F.data.startswith("del_grade_confirm:"))
+async def cb_del_grade_confirm(callback: types.CallbackQuery, session: AsyncSession):
+    """Confirm and delete a grade."""
+    parts = callback.data.split(":")
+    grade_id = int(parts[1])
+    subject_id = int(parts[2])
+    user_id = await get_user_id(session, callback.from_user.id)
+
+    result = await session.execute(
+        select(Grade).where(Grade.id == grade_id, Grade.user_id == user_id)
+    )
+    grade = result.scalar_one_or_none()
+
+    if not grade:
+        await callback.answer("Оценка не найдена", show_alert=True)
+        return
+
+    value = grade.value
+    await session.delete(grade)
+    await session.commit()
+
+    await callback.answer(f"🗑 Удалена оценка {value}", show_alert=True)
+
+    # Refresh subject view
+    await cb_subject_grades(
+        types.CallbackQuery(
+            id=callback.id,
+            from_user=callback.from_user,
+            chat_instance=callback.chat_instance,
+            message=callback.message,
+            data=f"subject:{subject_id}",
+        ),
+        session,
+    )
 
 
 # ─── Добавление оценки — выбор типа ────────────────────────────────────────
