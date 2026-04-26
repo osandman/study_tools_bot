@@ -196,9 +196,9 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
         avg = (1*c1 + 2*c2 + 3*c3 + 4*c4 + 5*c5) / total
         emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
 
-        text += f"\n1️⃣  2️⃣  3️⃣  4️⃣  5️⃣\n"
-        text += f"{c1}   {c2}   {c3}   {c4}   {c5}\n"
-        text += f"\nСредний: {emoji} <b>{avg:.2f}</b>\nВсего оценок: <b>{total}</b>"
+        text += f"\n<b>1   2   3   4   5</b>\n"
+        text += f"<b>{c1}   {c2}   {c3}   {c4}   {c5}</b>\n"
+        text += f"\nСредний балл: {emoji} <b>{avg:.2f}</b>\nВсего оценок: <b>{total}</b>"
     else:
         text += "\nОценок пока нет"
 
