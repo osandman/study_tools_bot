@@ -205,20 +205,8 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     kb.button(text="➕ Добавить оценки", callback_data=f"add:{subject_id}:{period}")
     if total > 0:
         kb.button(text="🗑 Сбросить за период", callback_data=f"reset_grades:{subject_id}:{period}")
-
-    for p_key, p_label in periods.items():
-        marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"subject:{subject_id}:{p_key}")
-
     kb.button(text="⬅️ Назад", callback_data="back_to_grades")
-
-    # Layout: action buttons (1 per row), then period buttons (N per row), then back
-    row_sizes = [1]  # add button
-    if total > 0:
-        row_sizes.append(1)  # reset button
-    row_sizes.append(len(periods))  # period buttons
-    row_sizes.append(1)  # back button
-    kb.adjust(*row_sizes)
+    kb.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await callback.answer()
@@ -283,8 +271,11 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
 
     if total > 0:
         kb.button(text=f"✅ Сохранить ({total})", callback_data="cnt:save")
-    kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-    kb.adjust(3, 3, 3, 3, 3, 1 if total > 0 else 0, 1)
+        kb.button(text="❌ Отмена", callback_data="cnt:cancel")
+        kb.adjust(3, 3, 3, 3, 3, 2, 1)
+    else:
+        kb.button(text="❌ Отмена", callback_data="cnt:cancel")
+        kb.adjust(3, 3, 3, 3, 3, 1)
 
     await message.edit_text(text, reply_markup=kb.as_markup())
 
