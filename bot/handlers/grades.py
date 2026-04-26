@@ -358,15 +358,19 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
             session.add_all(grades_to_add)
         await session.commit()
 
-        net = sum(add_counts.values())
         _add_state.pop(callback.from_user.id, None)
 
-        if net > 0:
-            await callback.answer(f"✅ Добавлено {net} оценок", show_alert=True)
-        elif net < 0:
-            await callback.answer(f"🗑 Удалено {abs(net)} оценок", show_alert=True)
-        else:
-            await callback.answer("Ничего не изменилось", show_alert=True)
+        added = sum(v for v in add_counts.values() if v > 0)
+        removed = sum(abs(v) for v in add_counts.values() if v < 0)
+
+        parts = []
+        if added:
+            parts.append(f"+{added}")
+        if removed:
+            parts.append(f"−{removed}")
+        summary = ", ".join(parts) if parts else "без изменений"
+
+        await callback.answer(f"✅ {summary}", show_alert=True)
 
         # Show subject card
         result = await session.execute(
