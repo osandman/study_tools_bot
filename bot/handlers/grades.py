@@ -271,15 +271,19 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
 
     kb = InlineKeyboardBuilder()
 
-    # Header with emojis
+    # Header with compact icons
     for val in [5, 4, 3, 2, 1]:
         emoji = ["🤩", "😊", "🙂", "😐", "😞"][val - 1]
-        kb.button(text=f"{emoji} {val}", callback_data="cnt:noop")
+        kb.button(text=emoji, callback_data="cnt:noop")
 
-    # Counts row: existing + new
+    # Counts row
     for val in [5, 4, 3, 2, 1]:
         total_val = ex[val] + ad[val]
         kb.button(text=str(total_val), callback_data="cnt:noop")
+
+    # Minus buttons
+    for val in [5, 4, 3, 2, 1]:
+        kb.button(text="−", callback_data=f"cnt:{val}:-")
 
     # Plus buttons
     for val in [5, 4, 3, 2, 1]:
@@ -288,10 +292,10 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     if new_total > 0:
         kb.button(text=f"✅ Добавить ({new_total})", callback_data="cnt:save")
         kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-        kb.adjust(5, 5, 5, 2, 1)
+        kb.adjust(5, 5, 5, 5, 2, 1)
     else:
         kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-        kb.adjust(5, 5, 5, 1)
+        kb.adjust(5, 5, 5, 5, 1)
 
     await message.edit_text(text, reply_markup=kb.as_markup())
 
