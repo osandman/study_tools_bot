@@ -234,10 +234,19 @@ async def cb_add_start(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Предмет не найден", show_alert=True)
         return
 
+    # Fetch existing counts
+    existing_result = await session.execute(
+        select(Grade.value, func.count(Grade.id))
+        .where(Grade.subject_id == subject_id, Grade.user_id == user.id, Grade.period == period)
+        .group_by(Grade.value)
+    )
+    existing = {row[0]: row[1] for row in existing_result.all()}
+
     _add_state[callback.from_user.id] = {
         "subject_id": subject_id,
         "period": period,
-        "counts": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
+        "existing": {5: existing.get(5, 0), 4: existing.get(4, 0), 3: existing.get(3, 0), 2: existing.get(2, 0), 1: existing.get(1, 0)},
+        "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
     }
 
     await _render_add_grades(callback.message, callback.from_user.id, subject.name)
@@ -249,29 +258,35 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     if not state:
         return
 
-    c = state["counts"]
-    total = sum(c.values())
+    ex = state["existing"]
+    ad = state["add"]
+    new_total = sum(ad.values())
+    exist_total = sum(ex.values())
 
-    text = (
-        f"➕ <b>{subject_name}</b>\n\n"
-        f"Укажи количество каждой оценки:\n\n"
-        f"  🤩 <b>5</b>: {c[5]}\n"
-        f"  😊 <b>4</b>: {c[4]}\n"
-        f"  🙂 <b>3</b>: {c[3]}\n"
-        f"  😐 <b>2</b>: {c[2]}\n"
-        f"  😞 <b>1</b>: {c[1]}\n\n"
-        f"Всего: <b>{total}</b>"
-    )
+    text = f"➕ <b>{subject_name}</b>\n\n"
+
+    if exist_total > 0:
+        text += f"Уже есть: {ex[5]}·5 {ex[4]}·4 {ex[3]}·3 {ex[2]}·2 {ex[1]}·1\n\n"
+
+    text += "Укажи сколько ДОБАВИТЬ:\n\n"
+
+    for val in [5, 4, 3, 2, 1]:
+        emoji = ["🤩", "😊", "🙂", "😐", "😞"][val - 1]
+        marker = f"+{ad[val]}" if ad[val] > 0 else "—"
+        text += f"  {emoji} <b>{val}</b>: {marker}\n"
+
+    text += f"\nДобавляется: <b>{new_total}</b>"
+    if exist_total > 0:
+        text += f" | Итого будет: <b>{exist_total + new_total}</b>"
 
     kb = InlineKeyboardBuilder()
-    # Minus and Plus for each grade
     for val in [5, 4, 3, 2, 1]:
-        kb.button(text=f"−", callback_data=f"cnt:{val}:-")
-        kb.button(text=f"{val}", callback_data=f"cnt:noop")
-        kb.button(text=f"+", callback_data=f"cnt:{val}:+")
+        kb.button(text="−", callback_data=f"cnt:{val}:-")
+        kb.button(text=str(val), callback_data="cnt:noop")
+        kb.button(text="+", callback_data=f"cnt:{val}:+")
 
-    if total > 0:
-        kb.button(text=f"✅ Сохранить ({total})", callback_data="cnt:save")
+    if new_total > 0:
+        kb.button(text=f"✅ Добавить ({new_total})", callback_data="cnt:save")
         kb.button(text="❌ Отмена", callback_data="cnt:cancel")
         kb.adjust(3, 3, 3, 3, 3, 2, 1)
     else:
@@ -308,12 +323,11 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
     if action == "save":
         subject_id = state["subject_id"]
         period = state["period"]
-        counts = state["counts"]
+        add_counts = state["add"]
         user = await get_user(session, callback.from_user.id)
 
-        # Bulk insert grades
         grades_to_add = []
-        for val, count in counts.items():
+        for val, count in add_counts.items():
             for _ in range(count):
                 grades_to_add.append(Grade(
                     user_id=user.id,
@@ -326,7 +340,7 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
             session.add_all(grades_to_add)
             await session.commit()
 
-        total = sum(counts.values())
+        total = sum(add_counts.values())
         _add_state.pop(callback.from_user.id, None)
 
         await callback.answer(f"✅ Сохранено {total} оценок!", show_alert=True)
@@ -354,11 +368,11 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
     val = int(parts[1])
     direction = parts[2]
 
-    if val in state["counts"]:
+    if val in state["add"]:
         if direction == "+":
-            state["counts"][val] += 1
-        elif direction == "-" and state["counts"][val] > 0:
-            state["counts"][val] -= 1
+            state["add"][val] += 1
+        elif direction == "-" and state["add"][val] > 0:
+            state["add"][val] -= 1
 
     result = await session.execute(
         select(Subject.name).where(Subject.id == state["subject_id"])
