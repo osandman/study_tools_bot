@@ -271,10 +271,14 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
 
     kb = InlineKeyboardBuilder()
 
-    # Header with compact icons
+    # Header with digit emojis
     for val in [5, 4, 3, 2, 1]:
-        emoji = ["🤩", "😊", "🙂", "😐", "😞"][val - 1]
-        kb.button(text=emoji, callback_data="cnt:noop")
+        digit_emoji = ["5️⃣", "4️⃣", "3️⃣", "2️⃣", "1️⃣"][val - 1]
+        kb.button(text=digit_emoji, callback_data="cnt:noop")
+
+    # Plus buttons
+    for val in [5, 4, 3, 2, 1]:
+        kb.button(text="+", callback_data=f"cnt:{val}:+")
 
     # Counts row
     for val in [5, 4, 3, 2, 1]:
@@ -285,12 +289,8 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     for val in [5, 4, 3, 2, 1]:
         kb.button(text="−", callback_data=f"cnt:{val}:-")
 
-    # Plus buttons
-    for val in [5, 4, 3, 2, 1]:
-        kb.button(text="+", callback_data=f"cnt:{val}:+")
-
-    if new_total > 0:
-        kb.button(text=f"✅ Добавить ({new_total})", callback_data="cnt:save")
+    if new_total != 0:
+        kb.button(text=f"✅ Сохранить ({'+' if new_total > 0 else ''}{new_total})", callback_data="cnt:save")
         kb.button(text="❌ Отмена", callback_data="cnt:cancel")
         kb.adjust(5, 5, 5, 5, 2, 1)
     else:
@@ -331,23 +331,42 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
         user = await get_user(session, callback.from_user.id)
 
         grades_to_add = []
+        deleted = 0
         for val, count in add_counts.items():
-            for _ in range(count):
-                grades_to_add.append(Grade(
-                    user_id=user.id,
-                    subject_id=subject_id,
-                    value=val,
-                    period=period,
-                ))
+            if count > 0:
+                for _ in range(count):
+                    grades_to_add.append(Grade(
+                        user_id=user.id,
+                        subject_id=subject_id,
+                        value=val,
+                        period=period,
+                    ))
+            elif count < 0:
+                # Delete N grades of this value
+                to_delete = await session.execute(
+                    select(Grade)
+                    .where(Grade.subject_id == subject_id, Grade.user_id == user.id,
+                           Grade.period == period, Grade.value == val)
+                    .order_by(Grade.created_at.desc())
+                    .limit(abs(count))
+                )
+                for g in to_delete.scalars().all():
+                    await session.delete(g)
+                    deleted += 1
 
         if grades_to_add:
             session.add_all(grades_to_add)
-            await session.commit()
+        await session.commit()
 
-        total = sum(add_counts.values())
+        net = sum(add_counts.values())
         _add_state.pop(callback.from_user.id, None)
 
-        await callback.answer(f"✅ Сохранено {total} оценок!", show_alert=True)
+        if net > 0:
+            await callback.answer(f"✅ Добавлено {net} оценок", show_alert=True)
+        elif net < 0:
+            await callback.answer(f"🗑 Удалено {abs(net)} оценок", show_alert=True)
+        else:
+            await callback.answer("Ничего не изменилось", show_alert=True)
 
         # Show subject card
         result = await session.execute(
