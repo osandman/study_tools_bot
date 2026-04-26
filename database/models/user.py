@@ -16,6 +16,7 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     period_system: Mapped[str] = mapped_column(String(20), default="trimesters")  # trimesters or quarters
+    active_period: Mapped[str | None] = mapped_column(String(20), nullable=True)  # user-selected period override
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
