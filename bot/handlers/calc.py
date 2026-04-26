@@ -120,8 +120,8 @@ def _build_calc_text(user: User, subjects: list, period: str, periods: dict) -> 
     for sd in graded:
         emoji = "🟢" if sd["rec"] >= 4 else "🟡" if sd["rec"] >= 3 else "🔴"
         text += f"📕 <b>{sd['name']}</b> {emoji} {sd['avg']:.2f} → {sd['rec']}\n"
-        text += f"  <code>1 2 3 4 5</code>\n"
-        text += f"  <code>{sd['c'][1]} {sd['c'][2]} {sd['c'][3]} {sd['c'][4]} {sd['c'][5]}</code>\n"
+        text += f"  <code>1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣</code>\n"
+        text += f"  <code>{sd['c'][1]}  {sd['c'][2]}  {sd['c'][3]}  {sd['c'][4]}  {sd['c'][5]}</code>\n"
 
         if sd["forecast"]:
             fc_parts = [f"{g}: +{n}×5" for g, n in sd["forecast"] if n > 0]
@@ -129,9 +129,6 @@ def _build_calc_text(user: User, subjects: list, period: str, periods: dict) -> 
                 text += f"  🎯 {', '.join(fc_parts)}\n"
             elif all(n == 0 for _, n in sd["forecast"]):
                 text += f"  ✅ Пятёрка гарантирована\n"
-
-        if sd["abs_perf"] > 0 or sd["qual_perf"] > 0:
-            text += f"  📊 Успеваемость: {sd['abs_perf']:.0f}% | Качество: {sd['qual_perf']:.0f}%\n"
 
         text += "\n"
 
