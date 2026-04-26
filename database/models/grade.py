@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime
 
 from sqlalchemy import ForeignKey, Integer, String, Date, DateTime, Text, func, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,13 +13,10 @@ class Grade(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"), nullable=False, index=True)
     value: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-5
-    period: Mapped[str] = mapped_column(String(20), default="trimester_1")  # trimester_1, trimester_2, trimester_3, year
-    grade_type: Mapped[str] = mapped_column(String(50), default="other")
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    period: Mapped[str] = mapped_column(String(20), default="t1")
     date: Mapped[date] = mapped_column(Date, nullable=False, server_default=func.current_date())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    # Relationships
     user = relationship("User", backref="grades")
     subject = relationship("Subject", back_populates="grades")
 
@@ -28,33 +25,38 @@ class Grade(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Grade {self.value} ({self.grade_type}) subject_id={self.subject_id}>"
+        return f"<Grade {self.value} subject_id={self.subject_id}>"
 
 
-GRADE_TYPES = {
-    "homework": "📝 Домашняя работа",
-    "test": "📋 Контрольная",
-    "exam": "🎓 Экзамен",
-    "classwork": "✏️ Классная работа",
-    "other": "📌 Другое",
+# Period systems
+PERIOD_SYSTEMS = {
+    "trimesters": {
+        "name": "Триместры",
+        "periods": {
+            "t1": "1 триместр",
+            "t2": "2 триместр",
+            "t3": "3 триместр",
+        },
+        "month_map": {9: "t1", 10: "t1", 11: "t1", 12: "t2", 1: "t2", 2: "t2", 3: "t3", 4: "t3", 5: "t3"},
+    },
+    "quarters": {
+        "name": "Четверти",
+        "periods": {
+            "q1": "1 четверть",
+            "q2": "2 четверть",
+            "q3": "3 четверть",
+            "q4": "4 четверть",
+        },
+        "month_map": {9: "q1", 10: "q1", 11: "q1", 12: "q2", 1: "q2", 2: "q2", 3: "q3", 4: "q3", 5: "q3", 6: "q4"},
+    },
 }
 
-PERIODS = {
-    "trimester_1": "1 триместр",
-    "trimester_2": "2 триместр",
-    "trimester_3": "3 триместр",
-    "year": "Год",
-}
 
-
-def get_current_period() -> str:
-    """Determine current trimester based on month."""
+def get_current_period(system: str = "trimesters") -> str:
     month = datetime.now().month
-    if month in (9, 10, 11):
-        return "trimester_1"
-    elif month in (12, 1, 2):
-        return "trimester_2"
-    elif month in (3, 4, 5):
-        return "trimester_3"
-    else:
-        return "trimester_3"  # June-August: default to last trimester
+    cfg = PERIOD_SYSTEMS.get(system, PERIOD_SYSTEMS["trimesters"])
+    return cfg["month_map"].get(month, list(cfg["periods"].keys())[-1])
+
+
+def get_periods(system: str = "trimesters") -> dict:
+    return PERIOD_SYSTEMS[system]["periods"]
