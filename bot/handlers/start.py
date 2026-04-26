@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models.user import User
+from database.models.subject import Subject, DEFAULT_SUBJECTS
 
 router = Router()
 
@@ -27,7 +28,14 @@ async def cmd_start(message: types.Message, session: AsyncSession):
             language_code=message.from_user.language_code,
         )
         session.add(user)
+        await session.flush()  # получаем user.id
+
+        # Create default subjects
+        for i, name in enumerate(DEFAULT_SUBJECTS):
+            session.add(Subject(user_id=user.id, name=name, is_default=True, sort_order=i))
+
         await session.commit()
+
         await message.answer(
             f"👋 Привет, {message.from_user.first_name}!\n\n"
             "Я — Study Tools Bot, твой помощник в учёбе.\n\n"

@@ -15,12 +15,11 @@ async def cmd_help(message: types.Message):
         "/profile — Мой профиль\n\n"
         "📚 <b>Учёба:</b>\n"
         "/subjects — Мои предметы\n"
+        "/grades — Оценки по предметам\n"
+        "/gpa — Средний балл\n"
         "/schedule — Расписание\n"
         "/notes — Заметки\n"
         "/deadlines — Дедлайны\n\n"
-        "🧮 <b>Инструменты:</b>\n"
-        "/gpa — Калькулятор GPA\n"
-        "/stats — Моя статистика\n\n"
         "⚙️ <b>Настройки:</b>\n"
         "/settings — Настройки бота",
         parse_mode="HTML",

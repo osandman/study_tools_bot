@@ -8,6 +8,7 @@ from loguru import logger
 
 from config import settings
 from database.base import engine, Base
+from database.models import User, Subject, Grade  # noqa: F401 — ensure all models are loaded
 from bot.middlewares import DatabaseMiddleware
 from bot.handlers import get_handlers_router
 
