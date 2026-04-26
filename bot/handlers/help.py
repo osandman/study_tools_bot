@@ -17,6 +17,7 @@ async def cmd_help(message: types.Message):
         "/subjects — Мои предметы\n"
         "/grades — Оценки по предметам\n"
         "/gpa — Средний балл\n"
+        "/calc — Калькулятор оценок\n"
         "/schedule — Расписание\n"
         "/notes — Заметки\n"
         "/deadlines — Дедлайны\n\n"

@@ -5,7 +5,7 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models.subject import Subject
-from database.models.grade import Grade
+from database.models.grade import Grade, PERIODS, get_current_period
 
 router = Router()
 
@@ -60,7 +60,9 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
 @router.callback_query(F.data.startswith("subject:"))
 async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession):
     """Show grades for a specific subject."""
-    subject_id = int(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    subject_id = int(parts[1])
+    period = parts[2] if len(parts) > 2 else get_current_period()
     user_id = await get_user_id(session, callback.from_user.id)
 
     result = await session.execute(
@@ -74,7 +76,7 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
 
     grades_result = await session.execute(
         select(Grade)
-        .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
+        .where(Grade.subject_id == subject_id, Grade.user_id == user_id, Grade.period == period)
         .order_by(desc(Grade.date), desc(Grade.created_at))
         .limit(20)
     )
@@ -82,11 +84,12 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
 
     avg_result = await session.execute(
         select(func.avg(Grade.value))
-        .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
+        .where(Grade.subject_id == subject_id, Grade.user_id == user_id, Grade.period == period)
     )
     avg = avg_result.scalar()
 
-    text = f"📚 <b>{subject.name}</b>\n"
+    period_label = PERIODS.get(period, period)
+    text = f"📚 <b>{subject.name}</b> | {period_label}\n"
     if avg is not None:
         emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
         text += f"Средний балл: {emoji} <b>{avg:.2f}</b>\n\n"
@@ -103,8 +106,14 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     kb.button(text="➕ Добавить оценку", callback_data=f"add_grade:{subject_id}")
     if grades:
         kb.button(text="🗑 Удалить оценку", callback_data=f"del_grade_list:{subject_id}")
+
+    # Period switcher
+    for p_key, p_label in PERIODS.items():
+        marker = "• " if p_key == period else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"subject:{subject_id}:{p_key}")
+
     kb.button(text="⬅️ Назад", callback_data="back_to_grades")
-    kb.adjust(1)
+    kb.adjust(1, 1, 4, 1)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await callback.answer()
@@ -232,6 +241,7 @@ async def cb_save_grade(callback: types.CallbackQuery, session: AsyncSession):
         user_id=user_id,
         subject_id=subject_id,
         value=value,
+        period=get_current_period(),
         grade_type="other",
     )
     session.add(grade)
@@ -522,6 +532,172 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
         subject.name = text
         await session.commit()
         await message.answer(f"✅ «{old_name}» → «{text}»\n\nСписок: /subjects")
+
+
+# ─── /calc — калькулятор оценок ───────────────────────────────────────────
+
+@router.message(Command("calc"))
+async def cmd_calc(message: types.Message, session: AsyncSession):
+    """Grade calculator with forecasts and period stats."""
+    user_id = await get_user_id(session, message.from_user.id)
+    period = get_current_period()
+
+    # Get all subjects
+    subj_result = await session.execute(
+        select(Subject)
+        .where(Subject.user_id == user_id)
+        .order_by(Subject.sort_order, Subject.name)
+    )
+    subjects = subj_result.scalars().all()
+
+    if not subjects:
+        await message.answer("📊 Нет предметов. Добавь через /subjects")
+        return
+
+    period_label = PERIODS.get(period, period)
+    text = f"📊 <b>Калькулятор оценок</b>\n{period_label}\n\n"
+    has_grades = False
+
+    for subj in subjects:
+        # Grade counts for this period
+        counts_result = await session.execute(
+            select(Grade.value, func.count(Grade.id))
+            .where(Grade.subject_id == subj.id, Grade.user_id == user_id, Grade.period == period)
+            .group_by(Grade.value)
+        )
+        counts = {row[0]: row[1] for row in counts_result.all()}
+
+        total = sum(counts.values())
+        if total == 0:
+            text += f"⚪ <b>{subj.name}</b> — нет оценок\n\n"
+            continue
+
+        has_grades = True
+        c5 = counts.get(5, 0)
+        c4 = counts.get(4, 0)
+        c3 = counts.get(3, 0)
+        c2 = counts.get(2, 0)
+        c1 = counts.get(1, 0)
+
+        avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1) / total
+        recommended = round(avg)
+
+        emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
+
+        text += f"{emoji} <b>{subj.name}</b>\n"
+        text += f"  5×{c5}  4×{c4}  3×{c3}  2×{c2}  1×{c1}\n"
+        text += f"  Средний: <b>{avg:.2f}</b> → {recommended}\n"
+
+        # Forecast: how many more grades needed to reach next level
+        if avg < 4.0:
+            # How many 5s to reach 4.0?
+            needed = 0
+            test_avg = avg
+            while test_avg < 4.0 and needed < 50:
+                needed += 1
+                test_avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1 + 5*needed) / (total + needed)
+            if needed < 50:
+                text += f"  До 4.0: ещё {needed}×5\n"
+        if avg < 5.0:
+            needed = 0
+            test_avg = avg
+            while test_avg < 5.0 and needed < 50:
+                needed += 1
+                test_avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1 + 5*needed) / (total + needed)
+            if needed < 50:
+                text += f"  До 5.0: ещё {needed}×5\n"
+
+        text += "\n"
+
+    if not has_grades:
+        text += "Оценок пока нет за этот период.\n"
+
+    # Period switcher
+    kb = InlineKeyboardBuilder()
+    for p_key, p_label in PERIODS.items():
+        marker = "• " if p_key == period else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"calc:{p_key}")
+    kb.adjust(4)
+
+    await message.answer(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("calc:"))
+async def cb_calc_period(callback: types.CallbackQuery, session: AsyncSession):
+    """Switch calculator period."""
+    period = callback.data.split(":")[1]
+    user_id = await get_user_id(session, callback.from_user.id)
+
+    subj_result = await session.execute(
+        select(Subject)
+        .where(Subject.user_id == user_id)
+        .order_by(Subject.sort_order, Subject.name)
+    )
+    subjects = subj_result.scalars().all()
+
+    period_label = PERIODS.get(period, period)
+    text = f"📊 <b>Калькулятор оценок</b>\n{period_label}\n\n"
+    has_grades = False
+
+    for subj in subjects:
+        counts_result = await session.execute(
+            select(Grade.value, func.count(Grade.id))
+            .where(Grade.subject_id == subj.id, Grade.user_id == user_id, Grade.period == period)
+            .group_by(Grade.value)
+        )
+        counts = {row[0]: row[1] for row in counts_result.all()}
+
+        total = sum(counts.values())
+        if total == 0:
+            text += f"⚪ <b>{subj.name}</b> — нет оценок\n\n"
+            continue
+
+        has_grades = True
+        c5 = counts.get(5, 0)
+        c4 = counts.get(4, 0)
+        c3 = counts.get(3, 0)
+        c2 = counts.get(2, 0)
+        c1 = counts.get(1, 0)
+
+        avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1) / total
+        recommended = round(avg)
+
+        emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
+
+        text += f"{emoji} <b>{subj.name}</b>\n"
+        text += f"  5×{c5}  4×{c4}  3×{c3}  2×{c2}  1×{c1}\n"
+        text += f"  Средний: <b>{avg:.2f}</b> → {recommended}\n"
+
+        if avg < 4.0:
+            needed = 0
+            test_avg = avg
+            while test_avg < 4.0 and needed < 50:
+                needed += 1
+                test_avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1 + 5*needed) / (total + needed)
+            if needed < 50:
+                text += f"  До 4.0: ещё {needed}×5\n"
+        if avg < 5.0:
+            needed = 0
+            test_avg = avg
+            while test_avg < 5.0 and needed < 50:
+                needed += 1
+                test_avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1 + 5*needed) / (total + needed)
+            if needed < 50:
+                text += f"  До 5.0: ещё {needed}×5\n"
+
+        text += "\n"
+
+    if not has_grades:
+        text += "Оценок пока нет за этот период.\n"
+
+    kb = InlineKeyboardBuilder()
+    for p_key, p_label in PERIODS.items():
+        marker = "• " if p_key == period else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"calc:{p_key}")
+    kb.adjust(4)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    await callback.answer()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
