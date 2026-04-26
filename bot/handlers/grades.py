@@ -83,7 +83,7 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
         return
 
     period_label = periods.get(period, period)
-    text = f"📊 <b>Оценки</b> | {period_label}\n\n"
+    text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
     kb = InlineKeyboardBuilder()
 
     for subj in subjects:
@@ -100,13 +100,12 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
 
         if avg is not None:
             emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
-            text += f"{emoji} <b>{subj.name}</b> — {avg:.2f} ({count})\n"
+            text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
         else:
-            text += f"⚪ <b>{subj.name}</b> — нет оценок\n"
+            text += f"⚪ {subj.name} —\n"
 
         kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
 
-    # Period switcher
     for p_key, p_label in periods.items():
         marker = "• " if p_key == period else ""
         kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
@@ -127,7 +126,7 @@ async def cb_grades_period(callback: types.CallbackQuery, session: AsyncSession)
     subjects = result.scalars().all()
 
     period_label = periods.get(period, period)
-    text = f"📊 <b>Оценки</b> | {period_label}\n\n"
+    text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
     kb = InlineKeyboardBuilder()
 
     for subj in subjects:
@@ -144,9 +143,9 @@ async def cb_grades_period(callback: types.CallbackQuery, session: AsyncSession)
 
         if avg is not None:
             emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
-            text += f"{emoji} <b>{subj.name}</b> — {avg:.2f} ({count})\n"
+            text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
         else:
-            text += f"⚪ <b>{subj.name}</b> — нет оценок\n"
+            text += f"⚪ {subj.name} —\n"
 
         kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
 
@@ -190,16 +189,18 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     total = sum(counts.values())
 
     period_label = periods.get(period, period)
-    text = f"📚 <b>{subject.name}</b> | {period_label}\n"
+    text = f"📚 <b>{subject.name}</b>\n📅 {period_label}\n"
 
     if total > 0:
         c5, c4, c3, c2, c1 = counts.get(5, 0), counts.get(4, 0), counts.get(3, 0), counts.get(2, 0), counts.get(1, 0)
         avg = (5*c5 + 4*c4 + 3*c3 + 2*c2 + 1*c1) / total
         emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
-        text += f"Средний: {emoji} <b>{avg:.2f}</b> | Всего: {total}\n"
-        text += f"5×{c5}  4×{c4}  3×{c3}  2×{c2}  1×{c1}\n"
+
+        text += f"\n  ⠀5⃣⠀  ⠀4⃣⠀  ⠀3⃣⠀  ⠀2⃣⠀  ⠀1⃣\n"
+        text += f"  ⠀{c5}⠀  ⠀{c4}⠀  ⠀{c3}⠀  ⠀{c2}⠀  ⠀{c1}\n"
+        text += f"\n  Средний: {emoji} <b>{avg:.2f}</b>\n  Всего: <b>{total}</b>"
     else:
-        text += "Оценок пока нет\n"
+        text += "\nОценок пока нет"
 
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить оценки", callback_data=f"add:{subject_id}:{period}")
