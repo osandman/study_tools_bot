@@ -271,12 +271,10 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
 
     kb = InlineKeyboardBuilder()
 
-    # Header
-    kb.button(text="5", callback_data="cnt:noop")
-    kb.button(text="4", callback_data="cnt:noop")
-    kb.button(text="3", callback_data="cnt:noop")
-    kb.button(text="2", callback_data="cnt:noop")
-    kb.button(text="1", callback_data="cnt:noop")
+    # Header with emojis
+    for val in [5, 4, 3, 2, 1]:
+        emoji = ["🤩", "😊", "🙂", "😐", "😞"][val - 1]
+        kb.button(text=f"{emoji} {val}", callback_data="cnt:noop")
 
     # Counts row: existing + new
     for val in [5, 4, 3, 2, 1]:
