@@ -349,9 +349,13 @@ async def cmd_gpa(message: types.Message, session: AsyncSession):
 
 # ─── /subjects — управление предметами ────────────────────────────────────
 
+# In-memory state for pending renames (telegram_id -> subject_id)
+_pending_renames: dict[int, int] = {}
+
+
 @router.message(Command("subjects"))
 async def cmd_subjects(message: types.Message, session: AsyncSession):
-    """Show and manage subjects."""
+    """Show subjects as buttons."""
     user_id = await get_user_id(session, message.from_user.id)
 
     result = await session.execute(
@@ -362,20 +366,100 @@ async def cmd_subjects(message: types.Message, session: AsyncSession):
     subjects = result.scalars().all()
 
     if not subjects:
-        await message.answer("📚 Нет предметов. Напиши название, и я добавлю!")
+        await message.answer("📚 Нет предметов. Добавь командой /subjects или просто напиши название.")
         return
 
-    text = "📚 <b>Твои предметы</b>\n\n"
     kb = InlineKeyboardBuilder()
-
     for subj in subjects:
-        text += f"• {subj.name}\n"
-        kb.button(text=f"🗑 {subj.name}", callback_data=f"del_subject:{subj.id}")
+        kb.button(text=subj.name, callback_data=f"subj:{subj.id}")
+    kb.button(text="➕ Добавить", callback_data="add_subject")
+    kb.adjust(2)
 
-    kb.button(text="➕ Добавить предмет", callback_data="add_subject")
-    kb.adjust(1)
+    await message.answer("📚 <b>Твои предметы</b>", reply_markup=kb.as_markup())
 
-    await message.answer(text, reply_markup=kb.as_markup())
+
+# ─── Карточка предмета ────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("subj:"))
+async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
+    """Show subject card with edit/delete options."""
+    subject_id = int(callback.data.split(":")[1])
+    user_id = await get_user_id(session, callback.from_user.id)
+
+    result = await session.execute(
+        select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id)
+    )
+    subject = result.scalar_one_or_none()
+    if not subject:
+        await callback.answer("Предмет не найден", show_alert=True)
+        return
+
+    # Count grades
+    count_result = await session.execute(
+        select(func.count(Grade.id))
+        .where(Grade.subject_id == subject_id, Grade.user_id == user_id)
+    )
+    count = count_result.scalar()
+
+    text = f"📚 <b>{subject.name}</b>\nОценок: {count}"
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Изменить", callback_data=f"edit_subject:{subject_id}")
+    kb.button(text="🗑 Удалить", callback_data=f"del_subject:{subject_id}")
+    kb.button(text="⬅️ Назад", callback_data="back_to_subjects")
+    kb.adjust(2, 1)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+# ─── Назад к списку предметов ────────────────────────────────────────────
+
+@router.callback_query(F.data == "back_to_subjects")
+async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSession):
+    """Go back to subjects list."""
+    user_id = await get_user_id(session, callback.from_user.id)
+
+    result = await session.execute(
+        select(Subject)
+        .where(Subject.user_id == user_id)
+        .order_by(Subject.sort_order, Subject.name)
+    )
+    subjects = result.scalars().all()
+
+    kb = InlineKeyboardBuilder()
+    for subj in subjects:
+        kb.button(text=subj.name, callback_data=f"subj:{subj.id}")
+    kb.button(text="➕ Добавить", callback_data="add_subject")
+    kb.adjust(2)
+
+    await callback.message.edit_text("📚 <b>Твои предметы</b>", reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+# ─── Переименование предмета ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("edit_subject:"))
+async def cb_edit_subject_prompt(callback: types.CallbackQuery, session: AsyncSession):
+    """Prompt user to type a new name for the subject."""
+    subject_id = int(callback.data.split(":")[1])
+    user_id = await get_user_id(session, callback.from_user.id)
+
+    result = await session.execute(
+        select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id)
+    )
+    subject = result.scalar_one_or_none()
+    if not subject:
+        await callback.answer("Предмет не найден", show_alert=True)
+        return
+
+    _pending_renames[callback.from_user.id] = subject_id
+
+    await callback.message.edit_text(
+        f"✏️ Текущее название: <b>{subject.name}</b>\n"
+        "Отправь новое название одним сообщением:"
+    )
+    await callback.answer()
 
 
 # ─── Удаление предмета ────────────────────────────────────────────────────
@@ -392,7 +476,7 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
     subject = result.scalar_one_or_none()
 
     if not subject:
-        await callback.answer("Нельзя удалить этот предмет", show_alert=True)
+        await callback.answer("Предмет не найден", show_alert=True)
         return
 
     name = subject.name
@@ -400,65 +484,90 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
     await session.commit()
 
     await callback.answer(f"🗑 Удалён: {name}", show_alert=True)
-    await callback.message.delete()
+
+    # Go back to subjects list
+    await cb_back_to_subjects(
+        types.CallbackQuery(
+            id=callback.id,
+            from_user=callback.from_user,
+            chat_instance=callback.chat_instance,
+            message=callback.message,
+            data="back_to_subjects",
+        ),
+        session,
+    )
 
 
-# ─── Добавление предмета (текст) ──────────────────────────────────────────
+# ─── Добавление предмета (кнопка) ────────────────────────────────────────
 
 @router.callback_query(F.data == "add_subject")
 async def cb_add_subject_prompt(callback: types.CallbackQuery):
     """Prompt user to type a new subject name."""
-    await callback.message.edit_text(
-        "📝 Напиши название нового предмета одним сообщением:"
-    )
+    _pending_renames[callback.from_user.id] = -1  # -1 = adding new
+    await callback.message.edit_text("📝 Напиши название нового предмета:")
     await callback.answer()
 
 
-@router.message(F.text & ~F.text.startswith("/"))
-async def handle_new_subject(message: types.Message, session: AsyncSession):
-    """Handle new subject name input."""
-    # Check if user has subjects (to determine if this might be a subject add)
-    user_id = await get_user_id(session, message.from_user.id)
+# ─── Обработка текста: переименование или добавление предмета ─────────────
 
-    # Simple heuristic: if message is short and looks like a subject name
+@router.message(F.text & ~F.text.startswith("/"))
+async def handle_subject_text(message: types.Message, session: AsyncSession):
+    """Handle rename or new subject input."""
+    pending = _pending_renames.pop(message.from_user.id, None)
+    if pending is None:
+        return  # Not waiting for input, ignore
+
     text = message.text.strip()
     if len(text) > 100 or len(text) < 2:
-        return  # Not a subject name
+        await message.answer("❌ Название должно быть от 2 до 100 символов.")
+        return
 
-    # Check if it looks like a subject name (no commands, not too long)
-    # This is a simplified version — in production you'd use FSM states
-    result = await session.execute(
-        select(Subject).where(Subject.user_id == user_id, Subject.name.ilike(text))
-    )
-    existing = result.scalar_one_or_none()
+    user_id = await get_user_id(session, message.from_user.id)
 
-    if existing:
-        return  # Subject already exists, skip silently
-
-    # Check if this is a duplicate of a default subject
-    for default_name in ["Математика", "Русский язык", "Литература", "Физика",
-                         "Химия", "Биология", "История", "Обществознание",
-                         "География", "Английский язык", "Информатика", "Физкультура"]:
-        if text.lower() == default_name.lower():
+    if pending == -1:
+        # Adding new subject
+        result = await session.execute(
+            select(Subject).where(Subject.user_id == user_id, Subject.name.ilike(text))
+        )
+        if result.scalar_one_or_none():
+            await message.answer(f"❌ Предмет «{text}» уже существует.")
             return
 
-    # Get max sort order
-    max_order_result = await session.execute(
-        select(func.max(Subject.sort_order)).where(Subject.user_id == user_id)
-    )
-    max_order = max_order_result.scalar() or 0
+        max_order_result = await session.execute(
+            select(func.max(Subject.sort_order)).where(Subject.user_id == user_id)
+        )
+        max_order = max_order_result.scalar() or 0
 
-    # Create new subject
-    subject = Subject(
-        user_id=user_id,
-        name=text,
-        is_default=False,
-        sort_order=max_order + 1,
-    )
-    session.add(subject)
-    await session.commit()
+        subject = Subject(user_id=user_id, name=text, is_default=False, sort_order=max_order + 1)
+        session.add(subject)
+        await session.commit()
+        await message.answer(f"✅ Предмет «{text}» добавлен!\n\nСписок: /subjects")
+    else:
+        # Renaming existing subject
+        result = await session.execute(
+            select(Subject).where(Subject.id == pending, Subject.user_id == user_id)
+        )
+        subject = result.scalar_one_or_none()
+        if not subject:
+            await message.answer("❌ Предмет не найден.")
+            return
 
-    await message.answer(f"✅ Предмет «{text}» добавлен!\n\nПосмотри все предметы: /subjects")
+        # Check for duplicate name
+        dup_result = await session.execute(
+            select(Subject).where(
+                Subject.user_id == user_id,
+                Subject.name.ilike(text),
+                Subject.id != pending,
+            )
+        )
+        if dup_result.scalar_one_or_none():
+            await message.answer(f"❌ Предмет «{text}» уже существует.")
+            return
+
+        old_name = subject.name
+        subject.name = text
+        await session.commit()
+        await message.answer(f"✅ «{old_name}» → «{text}»\n\nСписок: /subjects")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
