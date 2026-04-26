@@ -272,21 +272,21 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     kb = InlineKeyboardBuilder()
 
     # Header with digit emojis
-    for val in [5, 4, 3, 2, 1]:
-        digit_emoji = ["5️⃣", "4️⃣", "3️⃣", "2️⃣", "1️⃣"][val - 1]
+    for val in [1, 2, 3, 4, 5]:
+        digit_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"][val - 1]
         kb.button(text=digit_emoji, callback_data="cnt:noop")
 
     # Plus buttons
-    for val in [5, 4, 3, 2, 1]:
+    for val in [1, 2, 3, 4, 5]:
         kb.button(text="+", callback_data=f"cnt:{val}:+")
 
     # Counts row
-    for val in [5, 4, 3, 2, 1]:
+    for val in [1, 2, 3, 4, 5]:
         total_val = ex[val] + ad[val]
         kb.button(text=str(total_val), callback_data="cnt:noop")
 
     # Minus buttons
-    for val in [5, 4, 3, 2, 1]:
+    for val in [1, 2, 3, 4, 5]:
         kb.button(text="−", callback_data=f"cnt:{val}:-")
 
     if new_total != 0:
