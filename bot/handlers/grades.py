@@ -369,10 +369,8 @@ async def cmd_subjects(message: types.Message, session: AsyncSession):
     kb = InlineKeyboardBuilder()
 
     for subj in subjects:
-        default_badge = " ⭐" if subj.is_default else ""
-        text += f"• {subj.name}{default_badge}\n"
-        if not subj.is_default:
-            kb.button(text=f"🗑 {subj.name}", callback_data=f"del_subject:{subj.id}")
+        text += f"• {subj.name}\n"
+        kb.button(text=f"🗑 {subj.name}", callback_data=f"del_subject:{subj.id}")
 
     kb.button(text="➕ Добавить предмет", callback_data="add_subject")
     kb.adjust(1)
@@ -389,7 +387,7 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
     user_id = await get_user_id(session, callback.from_user.id)
 
     result = await session.execute(
-        select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id, Subject.is_default == False)
+        select(Subject).where(Subject.id == subject_id, Subject.user_id == user_id)
     )
     subject = result.scalar_one_or_none()
 
