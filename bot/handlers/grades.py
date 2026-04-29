@@ -11,6 +11,58 @@ from bot.utils.users import require_registered_message, require_registered_callb
 router = Router()
 
 
+async def _render_grades_list(
+    message: types.Message,
+    session: AsyncSession,
+    user_id: int,
+    period_system: str,
+    period: str,
+    periods: dict,
+) -> None:
+    """Render the grades summary for the given period."""
+    result = await session.execute(
+        select(Subject)
+        .where(Subject.user_id == user_id)
+        .order_by(Subject.sort_order, Subject.name)
+    )
+    subjects = result.scalars().all()
+
+    if not subjects:
+        await message.edit_text("📚 Нет предметов. Добавь через /subjects")
+        return
+
+    period_label = periods.get(period, period)
+    text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
+    kb = InlineKeyboardBuilder()
+
+    for subj in subjects:
+        avg_result = await session.execute(
+            select(func.avg(Grade.value))
+            .where(Grade.subject_id == subj.id, Grade.user_id == user_id, Grade.period == period)
+        )
+        avg = avg_result.scalar()
+        count_result = await session.execute(
+            select(func.count(Grade.id))
+            .where(Grade.subject_id == subj.id, Grade.user_id == user_id, Grade.period == period)
+        )
+        count = count_result.scalar()
+
+        if avg is not None:
+            emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
+            text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
+        else:
+            text += f"⚪ {subj.name} —\n"
+
+        kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
+
+    for p_key, p_label in periods.items():
+        marker = "• " if p_key == period else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
+
+    kb.adjust(*[2] * ((len(subjects) + 1) // 2), len(periods))
+    await message.edit_text(text, reply_markup=kb.as_markup())
+
+
 # ─── /settings — настройки ────────────────────────────────────────────────
 
 @router.message(Command("settings"))
@@ -121,50 +173,27 @@ async def cb_grades_period(callback: types.CallbackQuery, session: AsyncSession)
     user = await require_registered_callback(callback, session)
     if user is None:
         return
-    periods = get_periods(user.period_system)
 
-    result = await session.execute(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order, Subject.name)
+    await _render_grades_list(
+        callback.message,
+        session,
+        user.id,
+        user.period_system,
+        period,
+        get_periods(user.period_system),
     )
-    subjects = result.scalars().all()
-
-    period_label = periods.get(period, period)
-    text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
-    kb = InlineKeyboardBuilder()
-
-    for subj in subjects:
-        avg_result = await session.execute(
-            select(func.avg(Grade.value))
-            .where(Grade.subject_id == subj.id, Grade.user_id == user.id, Grade.period == period)
-        )
-        avg = avg_result.scalar()
-        count_result = await session.execute(
-            select(func.count(Grade.id))
-            .where(Grade.subject_id == subj.id, Grade.user_id == user.id, Grade.period == period)
-        )
-        count = count_result.scalar()
-
-        if avg is not None:
-            emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
-            text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
-        else:
-            text += f"⚪ {subj.name} —\n"
-
-        kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
-
-    for p_key, p_label in periods.items():
-        marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
-
-    kb.adjust(*[2] * ((len(subjects) + 1) // 2), len(periods))
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await callback.answer()
 
 
-# ─── Карточка предмета с оценками ─────────────────────────────────────────
+# ─── Карточка предмета → сразу счетчики ──────────────────────────────────
+
+# In-memory state: {telegram_id: {subject_id, period, counts: {5:0, 4:0, 3:0, 2:0, 1:0}}}
+_add_state: dict[int, dict] = {}
+
 
 @router.callback_query(F.data.startswith("subject:"))
-async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession):
+async def cb_subject_counter(callback: types.CallbackQuery, session: AsyncSession):
+    """Open subject card directly as the counter interface."""
     parts = callback.data.split(":")
     subject_id = int(parts[1])
     period = parts[2] if len(parts) > 2 else None
@@ -174,7 +203,6 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
 
     if period is None:
         period = get_current_period(user.period_system)
-    periods = get_periods(user.period_system)
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -184,65 +212,6 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
         await callback.answer("Предмет не найден", show_alert=True)
         return
 
-    # Get grade counts for this period
-    counts_result = await session.execute(
-        select(Grade.value, func.count(Grade.id))
-        .where(Grade.subject_id == subject_id, Grade.user_id == user.id, Grade.period == period)
-        .group_by(Grade.value)
-    )
-    counts = {row[0]: row[1] for row in counts_result.all()}
-    total = sum(counts.values())
-
-    period_label = periods.get(period, period)
-    text = f"📚 <b>{subject.name}</b>\n📅 {period_label}\n"
-
-    if total > 0:
-        c1, c2, c3, c4, c5 = counts.get(1, 0), counts.get(2, 0), counts.get(3, 0), counts.get(4, 0), counts.get(5, 0)
-        avg = (1*c1 + 2*c2 + 3*c3 + 4*c4 + 5*c5) / total
-        emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
-
-        grades_line = f"{1:>3}{2:>3}{3:>3}{4:>3}{5:>3}"
-        counts_line = f"{c1:>3}{c2:>3}{c3:>3}{c4:>3}{c5:>3}"
-        text += f"\n<code>Оценка:  {grades_line}\nКол-во:  {counts_line}</code>\n"
-        text += f"\nСредний балл: {emoji} <b>{avg:.2f}</b>\nВсего оценок: <b>{total}</b>"
-    else:
-        text += "\nОценок пока нет"
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Добавить оценки", callback_data=f"add:{subject_id}:{period}")
-    if total > 0:
-        kb.button(text="🗑 Сбросить за период", callback_data=f"reset_grades:{subject_id}:{period}")
-    kb.button(text="⬅️ Назад", callback_data="back_to_grades")
-    kb.adjust(1)
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await callback.answer()
-
-
-# ─── Добавление оценок — счётчики ─────────────────────────────────────────
-
-# In-memory state: {telegram_id: {subject_id, period, counts: {5:0, 4:0, 3:0, 2:0, 1:0}}}
-_add_state: dict[int, dict] = {}
-
-
-@router.callback_query(F.data.startswith("add:"))
-async def cb_add_start(callback: types.CallbackQuery, session: AsyncSession):
-    parts = callback.data.split(":")
-    subject_id = int(parts[1])
-    period = parts[2]
-    user = await require_registered_callback(callback, session)
-    if user is None:
-        return
-
-    result = await session.execute(
-        select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
-    )
-    subject = result.scalar_one_or_none()
-    if not subject:
-        await callback.answer("Предмет не найден", show_alert=True)
-        return
-
-    # Fetch existing counts
     existing_result = await session.execute(
         select(Grade.value, func.count(Grade.id))
         .where(Grade.subject_id == subject_id, Grade.user_id == user.id, Grade.period == period)
@@ -253,15 +222,21 @@ async def cb_add_start(callback: types.CallbackQuery, session: AsyncSession):
     _add_state[callback.from_user.id] = {
         "subject_id": subject_id,
         "period": period,
-        "existing": {5: existing.get(5, 0), 4: existing.get(4, 0), 3: existing.get(3, 0), 2: existing.get(2, 0), 1: existing.get(1, 0)},
+        "existing": {
+            5: existing.get(5, 0),
+            4: existing.get(4, 0),
+            3: existing.get(3, 0),
+            2: existing.get(2, 0),
+            1: existing.get(1, 0),
+        },
         "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
     }
 
-    await _render_add_grades(callback.message, callback.from_user.id, subject.name)
+    await _render_counter(callback.message, callback.from_user.id, subject.name)
     await callback.answer()
 
 
-async def _render_add_grades(message: types.Message, telegram_id: int, subject_name: str):
+async def _render_counter(message: types.Message, telegram_id: int, subject_name: str):
     state = _add_state.get(telegram_id)
     if not state:
         return
@@ -298,7 +273,7 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
     for val in [1, 2, 3, 4, 5]:
         kb.button(text="−", callback_data=f"cnt:{val}:-")
 
-    # Save always visible
+    # Action buttons
     if has_changes:
         parts = []
         added = sum(v for v in ad.values() if v > 0)
@@ -311,6 +286,9 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
         kb.button(text=label, callback_data="cnt:save")
     else:
         kb.button(text="💾 Сохранить", callback_data="cnt:noop")
+
+    if exist_total > 0:
+        kb.button(text="🗑 Сбросить", callback_data="cnt:reset")
     kb.button(text="❌ Отмена", callback_data="cnt:cancel")
     kb.adjust(5, 5, 5, 5, 2, 1)
 
@@ -318,7 +296,7 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
 
 
 @router.callback_query(F.data.startswith("cnt:"))
-async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
+async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession):
     user = await require_registered_callback(callback, session)
     if user is None:
         _add_state.pop(callback.from_user.id, None)
@@ -334,12 +312,43 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
     if action == "cancel":
         _add_state.pop(callback.from_user.id, None)
         await callback.answer("Отменено")
-        # Go back to subject
-        result = await session.execute(
-            select(Subject.name).where(Subject.id == state["subject_id"])
+
+        period = state["period"]
+        await _render_grades_list(
+            callback.message,
+            session,
+            user.id,
+            user.period_system,
+            period,
+            get_periods(user.period_system),
         )
-        name = result.scalar() or "?"
-        await callback.message.edit_text(f"📚 <b>{name}</b>\nОтменено.")
+        return
+
+    if action == "reset":
+        subject_id = state["subject_id"]
+        period = state["period"]
+
+        from sqlalchemy import delete
+        await session.execute(
+            delete(Grade).where(
+                Grade.subject_id == subject_id,
+                Grade.user_id == user.id,
+                Grade.period == period,
+            )
+        )
+        await session.commit()
+        await callback.answer("🗑 Оценки сброшены", show_alert=True)
+
+        _add_state.pop(callback.from_user.id, None)
+
+        await _render_grades_list(
+            callback.message,
+            session,
+            user.id,
+            user.period_system,
+            period,
+            get_periods(user.period_system),
+        )
         return
 
     if action == "noop":
@@ -362,7 +371,6 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
                         period=period,
                     ))
             elif count < 0:
-                # Delete N grades of this value
                 to_delete = await session.execute(
                     select(Grade)
                     .where(Grade.subject_id == subject_id, Grade.user_id == user.id,
@@ -391,22 +399,15 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
 
         await callback.answer(f"✅ {summary}", show_alert=True)
 
-        # Show subject card
-        result = await session.execute(
-            select(Subject).where(Subject.id == subject_id)
+        # Return to grades list
+        await _render_grades_list(
+            callback.message,
+            session,
+            user.id,
+            user.period_system,
+            period,
+            get_periods(user.period_system),
         )
-        subject = result.scalar_one_or_none()
-        if subject:
-            await cb_subject_grades(
-                types.CallbackQuery(
-                    id=callback.id,
-                    from_user=callback.from_user,
-                    chat_instance=callback.chat_instance,
-                    message=callback.message,
-                    data=f"subject:{subject_id}:{period}",
-                ),
-                session,
-            )
         return
 
     # Increment/decrement
@@ -420,67 +421,14 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
         elif direction == "-":
             ex_val = state["existing"][val]
             ad_val = state["add"][val]
-            if ex_val + ad_val > 0:  # can't go below 0 total
+            if ex_val + ad_val > 0:
                 state["add"][val] -= 1
 
     result = await session.execute(
         select(Subject.name).where(Subject.id == state["subject_id"])
     )
     name = result.scalar() or "?"
-    await _render_add_grades(callback.message, callback.from_user.id, name)
-    await callback.answer()
-
-
-# ─── Сброс оценок за период ──────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("reset_grades:"))
-async def cb_reset_grades(callback: types.CallbackQuery, session: AsyncSession):
-    parts = callback.data.split(":")
-    subject_id = int(parts[1])
-    period = parts[2]
-    user = await require_registered_callback(callback, session)
-    if user is None:
-        return
-
-    result = await session.execute(
-        select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
-    )
-    subject = result.scalar_one_or_none()
-    if not subject:
-        await callback.answer("Предмет не найден", show_alert=True)
-        return
-
-    # Delete grades for this period
-    from sqlalchemy import delete
-    await session.execute(
-        delete(Grade).where(
-            Grade.subject_id == subject_id,
-            Grade.user_id == user.id,
-            Grade.period == period,
-        )
-    )
-    await session.commit()
-
-    await callback.answer("🗑 Оценки сброшены", show_alert=True)
-
-    # Refresh
-    await cb_subject_grades(
-        types.CallbackQuery(
-            id=callback.id,
-            from_user=callback.from_user,
-            chat_instance=callback.chat_instance,
-            message=callback.message,
-            data=f"subject:{subject_id}:{period}",
-        ),
-        session,
-    )
-
-
-# ─── Кнопка «Назад» ──────────────────────────────────────────────────────
-
-@router.callback_query(F.data == "back_to_grades")
-async def cb_back_to_grades(callback: types.CallbackQuery, session: AsyncSession):
-    await callback.message.delete()
+    await _render_counter(callback.message, callback.from_user.id, name)
     await callback.answer()
 
 

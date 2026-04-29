@@ -8,9 +8,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.utils.users import require_registered_message, require_registered_callback
 from database.models import User, Subject, Grade
 from database.models.grade import get_current_period, get_periods
-from bot.utils.users import require_registered_message, require_registered_callback
 
 router = Router()
 
@@ -27,17 +27,33 @@ def _school_round(value: float) -> int:
     return math.floor(value + 0.5)
 
 
-def _format_percent(value: float) -> str:
-    rounded = round(value, 1)
-    if rounded.is_integer():
-        return f"{int(rounded)}%"
-    return f"{rounded:.1f}%"
-
-
 def _format_counts_table(counts: dict[int, int]) -> str:
     headers = "".join(f"{grade:>4}" for grade in range(1, 6))
     values = "".join(f"{counts.get(grade, 0):>4}" for grade in range(1, 6))
     return f"<code>Оценки{headers}\nКол-во{values}</code>"
+
+
+def _pluralize(count: int, one: str, few: str, many: str) -> str:
+    last_two = count % 100
+    last_one = count % 10
+
+    if 11 <= last_two <= 14:
+        return many
+    if last_one == 1:
+        return one
+    if 2 <= last_one <= 4:
+        return few
+    return many
+
+
+def _format_forecast_option(grade_value: int, count: int) -> str:
+    words = {
+        5: ("пятёрка", "пятёрки", "пятёрок"),
+        4: ("четвёрка", "четвёрки", "четвёрок"),
+        3: ("тройка", "тройки", "троек"),
+    }
+    one, few, many = words.get(grade_value, (f"оценка {grade_value}",) * 3)
+    return f"{count} {_pluralize(count, one, few, many)}"
 
 
 def _needed_count(total_sum: int, total: int, target_avg: float, grade_value: int) -> int | None:
@@ -58,7 +74,6 @@ def _forecast(counts: dict[int, int], total: int, avg: float) -> dict[int, list[
         5: (4.5, [5]),
         4: (3.5, [5, 4]),
         3: (2.5, [5, 4, 3]),
-        2: (1.5, [5, 4, 3, 2]),
     }
     results: dict[int, list[tuple[int, int]]] = {}
 
@@ -77,16 +92,20 @@ def _forecast(counts: dict[int, int], total: int, avg: float) -> dict[int, list[
     return results
 
 
-def _format_forecast_lines(forecast: dict[int, list[tuple[int, int]]]) -> list[str]:
+def _format_forecast_lines(forecast: dict[int, list[tuple[int, int]]], current_recommendation: int) -> list[str]:
     lines = []
 
-    for target in [5, 4, 3, 2]:
+    for target in [5, 4, 3]:
+        if current_recommendation >= target:
+            lines.append(f"До {target}: уже достигнуто")
+            continue
+
         options = forecast.get(target, [])
         if not options:
             continue
 
-        option_text = " или ".join(f"+{count}×{grade}" for grade, count in options)
-        lines.append(f"🎯 До {target}: {option_text}")
+        option_text = " или ".join(_format_forecast_option(grade, count) for grade, count in options)
+        lines.append(f"До {target}: {option_text}")
 
     return lines
 
@@ -96,7 +115,6 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
     period_label = periods.get(period, period)
     text = f"📊 <b>Калькулятор оценок</b>\n📅 {period_label}\n\n"
 
-    # Build per-subject data
     graded = []
     ungraded_names = []
 
@@ -110,70 +128,55 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
             ungraded_names.append(subj.name)
             continue
 
-        c = {v: counts.get(v, 0) for v in range(1, 6)}
-        total_sum = sum(v * c[v] for v in range(1, 6))
+        normalized_counts = {v: counts.get(v, 0) for v in range(1, 6)}
+        total_sum = sum(v * normalized_counts[v] for v in range(1, 6))
         avg = total_sum / total
         rec = _school_round(avg)
-        forecast = _forecast(c, total, avg)
-        abs_perf = (c[3] + c[4] + c[5]) / total * 100
-        qual_perf = (c[4] + c[5]) / total * 100
 
-        graded.append({
-            "name": subj.name,
-            "c": c,
-            "total": total,
-            "avg": avg,
-            "rec": rec,
-            "forecast": forecast,
-            "abs_perf": abs_perf,
-            "qual_perf": qual_perf,
-        })
+        graded.append(
+            {
+                "name": subj.name,
+                "counts": normalized_counts,
+                "total": total,
+                "avg": avg,
+                "rec": rec,
+                "forecast": _forecast(normalized_counts, total, avg),
+            }
+        )
 
-    # Overall summary
     if graded:
-        overall_sum = sum(s["avg"] * s["total"] for s in graded)
-        overall_count = sum(s["total"] for s in graded)
+        overall_sum = sum(item["avg"] * item["total"] for item in graded)
+        overall_count = sum(item["total"] for item in graded)
         overall_avg = overall_sum / overall_count
         overall_rec = _school_round(overall_avg)
         emoji = "🟢" if overall_rec >= 4 else "🟡" if overall_rec >= 3 else "🔴"
-        overall_abs_perf = sum(s["c"][3] + s["c"][4] + s["c"][5] for s in graded) / overall_count * 100
-        overall_qual_perf = sum(s["c"][4] + s["c"][5] for s in graded) / overall_count * 100
+
         text += f"📈 <b>Средний по всем:</b> {emoji} {overall_avg:.2f}\n"
         text += f"⭐ <b>Рекомендуемая:</b> {overall_rec}\n"
-        text += (
-            f"📚 <b>Успеваемость:</b> абс. {_format_percent(overall_abs_perf)}, "
-            f"кач. {_format_percent(overall_qual_perf)}\n"
-        )
 
-        # Overall forecast
-        overall_c = {}
-        for s in graded:
-            for v in range(1, 6):
-                overall_c[v] = overall_c.get(v, 0) + s["c"][v]
-        overall_fc = _forecast(overall_c, overall_count, overall_avg)
-        overall_lines = _format_forecast_lines(overall_fc)
+        overall_counts = {grade: 0 for grade in range(1, 6)}
+        for item in graded:
+            for grade in range(1, 6):
+                overall_counts[grade] += item["counts"][grade]
+
+        overall_lines = _format_forecast_lines(
+            _forecast(overall_counts, overall_count, overall_avg),
+            overall_rec,
+        )
         if overall_lines:
-            text += "\n".join(overall_lines) + "\n"
-        elif overall_rec == 5:
-            text += "🎯 Максимальная оценка уже достигнута! 🏆\n"
+            text += "📌 <b>Прогноз:</b>\n" + "\n".join(overall_lines) + "\n"
+
         text += "\n"
 
-    # Per-subject
-    for sd in graded:
-        emoji = "🟢" if sd["rec"] >= 4 else "🟡" if sd["rec"] >= 3 else "🔴"
-        text += f"📕 <b>{sd['name']}</b>\n"
-        text += f"{emoji} Средний: <b>{sd['avg']:.2f}</b> | Рекомендуемая: <b>{sd['rec']}</b>\n"
-        text += _format_counts_table(sd["c"]) + "\n"
-        text += (
-            f"📚 Успеваемость: абс. {_format_percent(sd['abs_perf'])}, "
-            f"кач. {_format_percent(sd['qual_perf'])}\n"
-        )
+    for item in graded:
+        emoji = "🟢" if item["rec"] >= 4 else "🟡" if item["rec"] >= 3 else "🔴"
+        text += f"📕 <b>{item['name']}</b>\n"
+        text += f"{emoji} Средний: <b>{item['avg']:.2f}</b> | Рекомендуемая: <b>{item['rec']}</b>\n"
+        text += _format_counts_table(item["counts"]) + "\n"
 
-        forecast_lines = _format_forecast_lines(sd["forecast"])
+        forecast_lines = _format_forecast_lines(item["forecast"], item["rec"])
         if forecast_lines:
-            text += "\n".join(forecast_lines) + "\n"
-        elif sd["rec"] == 5:
-            text += "✅ Пятёрка уже достигается\n"
+            text += "Прогноз:\n" + "\n".join(forecast_lines) + "\n"
 
         text += "\n"
 
@@ -201,7 +204,6 @@ async def cmd_calc(message: types.Message, session: AsyncSession):
         await message.answer("Нет предметов. Добавьте через /subjects")
         return
 
-    # Fetch grade data for all subjects in one query
     subj_ids = [s.id for s in subjects]
     grade_rows = await session.execute(
         select(Grade.subject_id, Grade.value, func.count(Grade.id))
@@ -213,13 +215,11 @@ async def cmd_calc(message: types.Message, session: AsyncSession):
         sid, val, cnt = row
         grade_map.setdefault(sid, []).append((val, cnt))
 
-    # Attach grade data to subjects
     for subj in subjects:
         subj._grade_rows = grade_map.get(subj.id, [])
 
     text = _build_calc_text(subjects, period, periods)
 
-    # Keyboard
     kb = InlineKeyboardBuilder()
     for p_key, p_label in periods.items():
         marker = "• " if p_key == period else ""

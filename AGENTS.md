@@ -25,6 +25,7 @@
 - Polling is limited to `allowed_updates=["message", "callback_query"]`. If you add other Telegram update types, update both `allowed_updates` and middleware registration.
 - SQLAlchemy metadata is discovered by importing `database.models`. If you add a model, re-export/import it in `database/models/__init__.py` so startup and Alembic both see it.
 - `bot/handlers/grades.py` uses module-level in-memory state (`_add_state`, `_pending_renames`), not persistent FSM storage. Those flows are single-process and reset on restart.
+- Clicking a subject in `/grades` now opens the counter interface directly (subject card was removed). Preserve `_add_state`/`_render_grades_list`/`cnt:` callback flow intact when editing.
 
 ## Verification Reality
 - There is no repo-local test, lint, typecheck, CI, or task-runner config at the moment. Do not claim `pytest`, `ruff`, or `mypy` passed unless you add that tooling yourself.
