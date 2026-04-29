@@ -1,26 +1,23 @@
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.user import User
 from database.models.subject import Subject
 from database.models.grade import Grade, PERIOD_SYSTEMS, get_current_period, get_periods
+from bot.utils.users import require_registered_message, require_registered_callback
 
 router = Router()
-
-
-async def get_user(session: AsyncSession, telegram_id: int) -> User:
-    result = await session.execute(select(User).where(User.telegram_id == telegram_id))
-    return result.scalar_one()
 
 
 # ─── /settings — настройки ────────────────────────────────────────────────
 
 @router.message(Command("settings"))
 async def cmd_settings(message: types.Message, session: AsyncSession):
-    user = await get_user(session, message.from_user.id)
+    user = await require_registered_message(message, session)
+    if user is None:
+        return
     system_label = PERIOD_SYSTEMS[user.period_system]["name"]
 
     kb = InlineKeyboardBuilder()
@@ -43,7 +40,9 @@ async def cb_set_period(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Неизвестная система", show_alert=True)
         return
 
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
     user.period_system = system
     await session.commit()
 
@@ -67,7 +66,9 @@ async def cb_set_period(callback: types.CallbackQuery, session: AsyncSession):
 
 @router.message(Command("grades"))
 async def cmd_grades(message: types.Message, session: AsyncSession):
-    user = await get_user(session, message.from_user.id)
+    user = await require_registered_message(message, session)
+    if user is None:
+        return
     period = get_current_period(user.period_system)
     periods = get_periods(user.period_system)
 
@@ -117,7 +118,9 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
 @router.callback_query(F.data.startswith("grades_period:"))
 async def cb_grades_period(callback: types.CallbackQuery, session: AsyncSession):
     period = callback.data.split(":")[1]
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
     periods = get_periods(user.period_system)
 
     result = await session.execute(
@@ -165,7 +168,9 @@ async def cb_subject_grades(callback: types.CallbackQuery, session: AsyncSession
     parts = callback.data.split(":")
     subject_id = int(parts[1])
     period = parts[2] if len(parts) > 2 else None
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     if period is None:
         period = get_current_period(user.period_system)
@@ -225,7 +230,9 @@ async def cb_add_start(callback: types.CallbackQuery, session: AsyncSession):
     parts = callback.data.split(":")
     subject_id = int(parts[1])
     period = parts[2]
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -312,6 +319,11 @@ async def _render_add_grades(message: types.Message, telegram_id: int, subject_n
 
 @router.callback_query(F.data.startswith("cnt:"))
 async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        _add_state.pop(callback.from_user.id, None)
+        return
+
     state = _add_state.get(callback.from_user.id)
     if not state:
         await callback.answer("Сессия истекла, начни заново", show_alert=True)
@@ -338,10 +350,8 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
         subject_id = state["subject_id"]
         period = state["period"]
         add_counts = state["add"]
-        user = await get_user(session, callback.from_user.id)
 
         grades_to_add = []
-        deleted = 0
         for val, count in add_counts.items():
             if count > 0:
                 for _ in range(count):
@@ -362,7 +372,6 @@ async def cb_count_action(callback: types.CallbackQuery, session: AsyncSession):
                 )
                 for g in to_delete.scalars().all():
                     await session.delete(g)
-                    deleted += 1
 
         if grades_to_add:
             session.add_all(grades_to_add)
@@ -429,7 +438,9 @@ async def cb_reset_grades(callback: types.CallbackQuery, session: AsyncSession):
     parts = callback.data.split(":")
     subject_id = int(parts[1])
     period = parts[2]
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -477,7 +488,9 @@ async def cb_back_to_grades(callback: types.CallbackQuery, session: AsyncSession
 
 @router.message(Command("gpa"))
 async def cmd_gpa(message: types.Message, session: AsyncSession):
-    user = await get_user(session, message.from_user.id)
+    user = await require_registered_message(message, session)
+    if user is None:
+        return
     period = get_current_period(user.period_system)
     periods = get_periods(user.period_system)
 
@@ -522,7 +535,9 @@ _pending_renames: dict[int, int] = {}
 
 @router.message(Command("subjects"))
 async def cmd_subjects(message: types.Message, session: AsyncSession):
-    user = await get_user(session, message.from_user.id)
+    user = await require_registered_message(message, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order, Subject.name)
@@ -545,7 +560,9 @@ async def cmd_subjects(message: types.Message, session: AsyncSession):
 @router.callback_query(F.data.startswith("subj:"))
 async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
     subject_id = int(callback.data.split(":")[1])
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -574,7 +591,9 @@ async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "back_to_subjects")
 async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSession):
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order, Subject.name)
@@ -594,7 +613,9 @@ async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSessi
 @router.callback_query(F.data.startswith("edit_subject:"))
 async def cb_edit_subject_prompt(callback: types.CallbackQuery, session: AsyncSession):
     subject_id = int(callback.data.split(":")[1])
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -616,7 +637,9 @@ async def cb_edit_subject_prompt(callback: types.CallbackQuery, session: AsyncSe
 @router.callback_query(F.data.startswith("del_subject:"))
 async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession):
     subject_id = int(callback.data.split(":")[1])
-    user = await get_user(session, callback.from_user.id)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -643,7 +666,11 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
 
 
 @router.callback_query(F.data == "add_subject")
-async def cb_add_subject_prompt(callback: types.CallbackQuery):
+async def cb_add_subject_prompt(callback: types.CallbackQuery, session: AsyncSession):
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
+
     _pending_renames[callback.from_user.id] = -1
     await callback.message.edit_text("📝 Напиши название нового предмета:")
     await callback.answer()
@@ -651,7 +678,7 @@ async def cb_add_subject_prompt(callback: types.CallbackQuery):
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_subject_text(message: types.Message, session: AsyncSession):
-    pending = _pending_renames.pop(message.from_user.id, None)
+    pending = _pending_renames.get(message.from_user.id)
     if pending is None:
         return
 
@@ -660,7 +687,9 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
         await message.answer("❌ Название должно быть от 2 до 100 символов.")
         return
 
-    user = await get_user(session, message.from_user.id)
+    user = await require_registered_message(message, session)
+    if user is None:
+        return
 
     if pending == -1:
         result = await session.execute(
@@ -678,6 +707,7 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
         subject = Subject(user_id=user.id, name=text, is_default=False, sort_order=max_order + 1)
         session.add(subject)
         await session.commit()
+        _pending_renames.pop(message.from_user.id, None)
         await message.answer(f"✅ Предмет «{text}» добавлен!\n\nСписок: /subjects")
     else:
         result = await session.execute(
@@ -685,6 +715,7 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
         )
         subject = result.scalar_one_or_none()
         if not subject:
+            _pending_renames.pop(message.from_user.id, None)
             await message.answer("❌ Предмет не найден.")
             return
 
@@ -702,4 +733,5 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
         old_name = subject.name
         subject.name = text
         await session.commit()
+        _pending_renames.pop(message.from_user.id, None)
         await message.answer(f"✅ «{old_name}» → «{text}»\n\nСписок: /subjects")
