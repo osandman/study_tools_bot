@@ -9,17 +9,12 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.utils.users import require_registered_message, require_registered_callback
-from database.models import User, Subject, Grade
-from database.models.grade import get_current_period, get_periods
+from bot.utils.periods import get_active_period
+from bot.utils.grades import grade_emoji
+from database.models import Subject, Grade
+from database.models.grade import get_periods
 
 router = Router()
-
-
-def _get_active_period(user: User) -> str:
-    """Return active period for user, falling back to current month-based period."""
-    if user.active_period:
-        return user.active_period
-    return get_current_period(user.period_system)
 
 
 def _school_round(value: float) -> int:
@@ -97,7 +92,6 @@ def _format_forecast_lines(forecast: dict[int, list[tuple[int, int]]], current_r
 
     for target in [5, 4, 3]:
         if current_recommendation >= target:
-            lines.append(f"До {target}: уже достигнуто")
             continue
 
         options = forecast.get(target, [])
@@ -149,7 +143,7 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
         overall_count = sum(item["total"] for item in graded)
         overall_avg = overall_sum / overall_count
         overall_rec = _school_round(overall_avg)
-        emoji = "🟢" if overall_rec >= 4 else "🟡" if overall_rec >= 3 else "🔴"
+        emoji = grade_emoji(overall_rec)
 
         text += f"📈 <b>Средний по всем:</b> {emoji} {overall_avg:.2f}\n"
         text += f"⭐ <b>Рекомендуемая:</b> {overall_rec}\n"
@@ -169,7 +163,7 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
         text += "\n"
 
     for item in graded:
-        emoji = "🟢" if item["rec"] >= 4 else "🟡" if item["rec"] >= 3 else "🔴"
+        emoji = grade_emoji(item["rec"])
         text += f"📕 <b>{item['name']}</b>\n"
         text += f"{emoji} Средний: <b>{item['avg']:.2f}</b> | Рекомендуемая: <b>{item['rec']}</b>\n"
         text += _format_counts_table(item["counts"]) + "\n"
@@ -192,11 +186,11 @@ async def cmd_calc(message: types.Message, session: AsyncSession):
     if not user:
         return
 
-    period = _get_active_period(user)
+    period = get_active_period(user)
     periods = get_periods(user.period_system)
 
     subjects = await session.scalars(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order)
+        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
     )
     subjects = subjects.all()
 
@@ -242,7 +236,7 @@ async def cb_calc_period(callback: types.CallbackQuery, session: AsyncSession):
     periods = get_periods(user.period_system)
 
     subjects = await session.scalars(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order)
+        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
     )
     subjects = subjects.all()
 

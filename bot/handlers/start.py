@@ -1,9 +1,9 @@
 from aiogram import Router, types
 from aiogram.filters import CommandStart
+from aiogram.types import ReplyKeyboardRemove
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.keyboards import get_main_menu
 from database.models.user import User
 from database.models.subject import Subject, DEFAULT_SUBJECTS
 
@@ -33,7 +33,7 @@ async def cmd_start(message: types.Message, session: AsyncSession):
 
         # Create default subjects
         for i, name in enumerate(DEFAULT_SUBJECTS):
-            session.add(Subject(user_id=user.id, name=name, is_default=True, sort_order=i))
+            session.add(Subject(user_id=user.id, name=name, is_default=True))
 
         await session.commit()
 
@@ -45,8 +45,8 @@ async def cmd_start(message: types.Message, session: AsyncSession):
             "• Сохранять и считать оценки\n"
             "• Показывать средний балл\n"
             "• Подсказывать, сколько оценок нужно до цели\n\n"
-            "Главное меню уже доступно кнопками ниже.",
-            reply_markup=get_main_menu(),
+            "Меню доступно через кнопку слева внизу.",
+            reply_markup=ReplyKeyboardRemove(),
         )
     else:
         # Update user info if changed
@@ -56,6 +56,6 @@ async def cmd_start(message: types.Message, session: AsyncSession):
 
         await message.answer(
             f"С возвращением, {message.from_user.first_name}! 👋\n\n"
-            "Выбирай нужный раздел в меню ниже.",
-            reply_markup=get_main_menu(),
+            "Выбирай нужный раздел в меню.",
+            reply_markup=ReplyKeyboardRemove(),
         )

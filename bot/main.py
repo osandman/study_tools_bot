@@ -4,6 +4,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats
 from loguru import logger
 
 from config import settings
@@ -28,6 +29,27 @@ async def on_startup(bot: Bot):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables created/verified.")
+    commands = [
+        BotCommand(command="start", description="Начать работу"),
+        BotCommand(command="subjects", description="Мои предметы"),
+        BotCommand(command="grades", description="Оценки по предметам"),
+        BotCommand(command="calc", description="Калькулятор оценок"),
+        BotCommand(command="settings", description="Настройки"),
+        BotCommand(command="help", description="Справка"),
+    ]
+    # Clear old scopes
+    try:
+        await bot.delete_my_commands(scope=BotCommandScopeDefault())
+        await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+    except Exception:
+        pass
+    # Set both scopes
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    existing = await bot.get_my_commands(scope=BotCommandScopeDefault())
+    logger.info(f"Commands in default scope: {[(c.command, c.description) for c in existing]}")
+    existing_private = await bot.get_my_commands(scope=BotCommandScopeAllPrivateChats())
+    logger.info(f"Commands in private-chats scope: {[(c.command, c.description) for c in existing_private]}")
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
 

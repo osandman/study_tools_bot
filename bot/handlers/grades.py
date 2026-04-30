@@ -5,8 +5,10 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models.subject import Subject
-from database.models.grade import Grade, PERIOD_SYSTEMS, get_current_period, get_periods
+from database.models.grade import Grade, PERIOD_SYSTEMS, get_periods
 from bot.utils.users import require_registered_message, require_registered_callback
+from bot.utils.periods import get_active_period
+from bot.utils.grades import grade_emoji
 
 router = Router()
 
@@ -23,7 +25,7 @@ async def _render_grades_list(
     result = await session.execute(
         select(Subject)
         .where(Subject.user_id == user_id)
-        .order_by(Subject.sort_order, Subject.name)
+        .order_by(Subject.name)
     )
     subjects = result.scalars().all()
 
@@ -48,18 +50,25 @@ async def _render_grades_list(
         count = count_result.scalar()
 
         if avg is not None:
-            emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
+            emoji = grade_emoji(avg)
             text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
         else:
             text += f"⚪ {subj.name} —\n"
 
         kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
 
-    for p_key, p_label in periods.items():
-        marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
+    # Overall average
+    if subjects:
+        overall_result = await session.execute(
+            select(func.avg(Grade.value))
+            .where(Grade.user_id == user_id, Grade.period == period)
+        )
+        overall_avg = overall_result.scalar()
+        if overall_avg is not None:
+            overall_emoji = grade_emoji(overall_avg)
+            text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
 
-    kb.adjust(*[2] * ((len(subjects) + 1) // 2), len(periods))
+    kb.adjust(*[2] * ((len(subjects) + 1) // 2))
     await message.edit_text(text, reply_markup=kb.as_markup())
 
 
@@ -71,47 +80,108 @@ async def cmd_settings(message: types.Message, session: AsyncSession):
     if user is None:
         return
     system_label = PERIOD_SYSTEMS[user.period_system]["name"]
+    periods = get_periods(user.period_system)
+    active = get_active_period(user)
+
+    text = (
+        f"⚙️ <b>Настройки</b>\n\n"
+        f"Система периодов: <b>{system_label}</b>\n"
+        f"Активный период: <b>{periods.get(active, active)}</b>"
+    )
 
     kb = InlineKeyboardBuilder()
     for key, cfg in PERIOD_SYSTEMS.items():
         marker = "✅ " if key == user.period_system else ""
         kb.button(text=f"{marker}{cfg['name']}", callback_data=f"set_period:{key}")
-    kb.adjust(2)
 
-    await message.answer(
-        f"⚙️ <b>Настройки</b>\n\n"
-        f"Система периодов: <b>{system_label}</b>",
-        reply_markup=kb.as_markup()
-    )
+    for p_key, p_label in periods.items():
+        marker = "✅ " if p_key == active else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"set_active_period:{p_key}")
+    kb.button(text="🔄 Авто", callback_data="set_active_period:auto")
+    kb.adjust(2, 3)
+
+    await message.answer(text, reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data.startswith("set_period:"))
 async def cb_set_period(callback: types.CallbackQuery, session: AsyncSession):
     system = callback.data.split(":")[1]
     if system not in PERIOD_SYSTEMS:
-        await callback.answer("Неизвестная система", show_alert=True)
+        await callback.answer("Неизвестная система")
         return
 
     user = await require_registered_callback(callback, session)
     if user is None:
         return
     user.period_system = system
+    user.active_period = None  # reset when changing system
     await session.commit()
 
     system_label = PERIOD_SYSTEMS[system]["name"]
-    await callback.answer(f"✅ Выбрано: {system_label}", show_alert=True)
+    periods = get_periods(system)
+    active = get_active_period(user)
+
+    text = (
+        f"⚙️ <b>Настройки</b>\n\n"
+        f"Система периодов: <b>{system_label}</b>\n"
+        f"Активный период: <b>{periods.get(active, active)}</b>"
+    )
 
     kb = InlineKeyboardBuilder()
     for key, cfg in PERIOD_SYSTEMS.items():
         marker = "✅ " if key == system else ""
         kb.button(text=f"{marker}{cfg['name']}", callback_data=f"set_period:{key}")
-    kb.adjust(2)
 
-    await callback.message.edit_text(
+    for p_key, p_label in periods.items():
+        marker = "✅ " if p_key == active else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"set_active_period:{p_key}")
+    kb.button(text="🔄 Авто", callback_data="set_active_period:auto")
+    kb.adjust(2, 3)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("set_active_period:"))
+async def cb_set_active_period(callback: types.CallbackQuery, session: AsyncSession):
+    value = callback.data.split(":")[1]
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
+
+    if value == "auto":
+        user.active_period = None
+    else:
+        periods = get_periods(user.period_system)
+        if value not in periods:
+            await callback.answer("Неизвестный период")
+            return
+        user.active_period = value
+    await session.commit()
+
+    periods = get_periods(user.period_system)
+    active = get_active_period(user)
+    system_label = PERIOD_SYSTEMS[user.period_system]["name"]
+
+    text = (
         f"⚙️ <b>Настройки</b>\n\n"
-        f"Система периодов: <b>{system_label}</b>",
-        reply_markup=kb.as_markup()
+        f"Система периодов: <b>{system_label}</b>\n"
+        f"Активный период: <b>{periods.get(active, active)}</b>"
     )
+
+    kb = InlineKeyboardBuilder()
+    for key, cfg in PERIOD_SYSTEMS.items():
+        marker = "✅ " if key == user.period_system else ""
+        kb.button(text=f"{marker}{cfg['name']}", callback_data=f"set_period:{key}")
+
+    for p_key, p_label in periods.items():
+        marker = "✅ " if p_key == active else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"set_active_period:{p_key}")
+    kb.button(text="🔄 Авто", callback_data="set_active_period:auto")
+    kb.adjust(2, 3)
+
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    await callback.answer()
 
 
 # ─── /grades — показать оценки ────────────────────────────────────────────
@@ -121,13 +191,13 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
     user = await require_registered_message(message, session)
     if user is None:
         return
-    period = get_current_period(user.period_system)
-    periods = get_periods(user.period_system)
+    period = get_active_period(user)
+    periods_labels = get_periods(user.period_system)
 
     result = await session.execute(
         select(Subject)
         .where(Subject.user_id == user.id)
-        .order_by(Subject.sort_order, Subject.name)
+        .order_by(Subject.name)
     )
     subjects = result.scalars().all()
 
@@ -135,7 +205,7 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
         await message.answer("📚 Нет предметов. Добавь через /subjects")
         return
 
-    period_label = periods.get(period, period)
+    period_label = periods_labels.get(period, period)
     text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
     kb = InlineKeyboardBuilder()
 
@@ -152,37 +222,26 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
         count = count_result.scalar()
 
         if avg is not None:
-            emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
+            emoji = grade_emoji(avg)
             text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
         else:
             text += f"⚪ {subj.name} —\n"
 
         kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
 
-    for p_key, p_label in periods.items():
-        marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"grades_period:{p_key}")
+    # Overall average
+    overall_result = await session.execute(
+        select(func.avg(Grade.value))
+        .where(Grade.user_id == user.id, Grade.period == period)
+    )
+    overall_avg = overall_result.scalar()
+    if overall_avg is not None:
+        overall_emoji = "🟢" if overall_avg >= 4.0 else "🟡" if overall_avg >= 3.0 else "🔴"
+        text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
 
-    kb.adjust(*[2] * ((len(subjects) + 1) // 2), len(periods))
+    kb.adjust(*[2] * ((len(subjects) + 1) // 2))
     await message.answer(text, reply_markup=kb.as_markup())
 
-
-@router.callback_query(F.data.startswith("grades_period:"))
-async def cb_grades_period(callback: types.CallbackQuery, session: AsyncSession):
-    period = callback.data.split(":")[1]
-    user = await require_registered_callback(callback, session)
-    if user is None:
-        return
-
-    await _render_grades_list(
-        callback.message,
-        session,
-        user.id,
-        user.period_system,
-        period,
-        get_periods(user.period_system),
-    )
-    await callback.answer()
 
 
 # ─── Карточка предмета → сразу счетчики ──────────────────────────────────
@@ -202,14 +261,14 @@ async def cb_subject_counter(callback: types.CallbackQuery, session: AsyncSessio
         return
 
     if period is None:
-        period = get_current_period(user.period_system)
+        period = get_active_period(user)
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
     )
     subject = result.scalar_one_or_none()
     if not subject:
-        await callback.answer("Предмет не найден", show_alert=True)
+        await callback.answer("Предмет не найден", )
         return
 
     existing_result = await session.execute(
@@ -304,7 +363,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
 
     state = _add_state.get(callback.from_user.id)
     if not state:
-        await callback.answer("Сессия истекла, начни заново", show_alert=True)
+        await callback.answer("Сессия истекла, начни заново", )
         return
 
     action = callback.data.split(":")[1]
@@ -337,7 +396,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
             )
         )
         await session.commit()
-        await callback.answer("🗑 Оценки сброшены", show_alert=True)
+        await callback.answer("🗑 Оценки сброшены", )
 
         _add_state.pop(callback.from_user.id, None)
 
@@ -397,7 +456,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
             parts.append(f"−{removed}")
         summary = ", ".join(parts) if parts else "без изменений"
 
-        await callback.answer(f"✅ {summary}", show_alert=True)
+        await callback.answer(f"✅ {summary}", )
 
         # Return to grades list
         await _render_grades_list(
@@ -432,50 +491,6 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
     await callback.answer()
 
 
-# ─── /gpa — средний балл ─────────────────────────────────────────────────
-
-@router.message(Command("gpa"))
-async def cmd_gpa(message: types.Message, session: AsyncSession):
-    user = await require_registered_message(message, session)
-    if user is None:
-        return
-    period = get_current_period(user.period_system)
-    periods = get_periods(user.period_system)
-
-    result = await session.execute(
-        select(
-            Subject.name,
-            func.avg(Grade.value).label("avg"),
-            func.count(Grade.id).label("count"),
-        )
-        .join(Grade, Grade.subject_id == Subject.id)
-        .where(Grade.user_id == user.id, Grade.period == period)
-        .group_by(Subject.id, Subject.name)
-        .order_by(Subject.sort_order, Subject.name)
-    )
-    rows = result.all()
-
-    if not rows:
-        await message.answer("📊 Нет оценок за текущий период.")
-        return
-
-    period_label = periods.get(period, period)
-    text = f"📊 <b>Средний балл</b> | {period_label}\n\n"
-    total_sum, total_count = 0, 0
-
-    for name, avg, count in rows:
-        emoji = "🟢" if avg >= 4.0 else "🟡" if avg >= 3.0 else "🔴"
-        text += f"{emoji} <b>{name}</b>: {avg:.2f} ({count})\n"
-        total_sum += avg * count
-        total_count += count
-
-    overall = total_sum / total_count if total_count > 0 else 0
-    overall_emoji = "🟢" if overall >= 4.0 else "🟡" if overall >= 3.0 else "🔴"
-    text += f"\n{overall_emoji} <b>Общий: {overall:.2f}</b>"
-
-    await message.answer(text)
-
-
 # ─── /subjects — управление предметами ────────────────────────────────────
 
 _pending_renames: dict[int, int] = {}
@@ -488,7 +503,7 @@ async def cmd_subjects(message: types.Message, session: AsyncSession):
         return
 
     result = await session.execute(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order, Subject.name)
+        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
     )
     subjects = result.scalars().all()
 
@@ -517,7 +532,7 @@ async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
     )
     subject = result.scalar_one_or_none()
     if not subject:
-        await callback.answer("Предмет не найден", show_alert=True)
+        await callback.answer("Предмет не найден", )
         return
 
     count_result = await session.execute(
@@ -544,7 +559,7 @@ async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSessi
         return
 
     result = await session.execute(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.sort_order, Subject.name)
+        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
     )
     subjects = result.scalars().all()
 
@@ -570,7 +585,7 @@ async def cb_edit_subject_prompt(callback: types.CallbackQuery, session: AsyncSe
     )
     subject = result.scalar_one_or_none()
     if not subject:
-        await callback.answer("Предмет не найден", show_alert=True)
+        await callback.answer("Предмет не найден", )
         return
 
     _pending_renames[callback.from_user.id] = subject_id
@@ -594,14 +609,14 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
     )
     subject = result.scalar_one_or_none()
     if not subject:
-        await callback.answer("Предмет не найден", show_alert=True)
+        await callback.answer("Предмет не найден", )
         return
 
     name = subject.name
     await session.delete(subject)
     await session.commit()
 
-    await callback.answer(f"🗑 Удалён: {name}", show_alert=True)
+    await callback.answer(f"🗑 Удалён: {name}", )
 
     await cb_back_to_subjects(
         types.CallbackQuery(
@@ -647,12 +662,7 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
             await message.answer(f"❌ Предмет «{text}» уже существует.")
             return
 
-        max_order_result = await session.execute(
-            select(func.max(Subject.sort_order)).where(Subject.user_id == user.id)
-        )
-        max_order = max_order_result.scalar() or 0
-
-        subject = Subject(user_id=user.id, name=text, is_default=False, sort_order=max_order + 1)
+        subject = Subject(user_id=user.id, name=text, is_default=False)
         session.add(subject)
         await session.commit()
         _pending_renames.pop(message.from_user.id, None)
