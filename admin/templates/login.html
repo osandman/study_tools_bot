@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Admin Login{% endblock %}
+{% block content %}
+<h1>Вход в админку</h1>
+{% if error %}<p class="blocked">{{ error }}</p>{% endif %}
+<form method="post" action="/admin/login">
+  <p><label>Логин<br><input type="text" name="username" required></label></p>
+  <p><label>Пароль<br><input type="password" name="password" required></label></p>
+  <p><button class="ok" type="submit">Войти</button></p>
+</form>
+{% endblock %}

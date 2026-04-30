@@ -308,9 +308,22 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
 
     text = f"➕ <b>{subject_name}</b>\n"
     if exist_total > 0:
-        text += f"Всего: <b>{exist_total + new_total}</b>\n\n"
+        text += f"Всего: <b>{exist_total + new_total}</b>"
     else:
-        text += "\n"
+        text += f"Всего: <b>{new_total}</b>"
+
+    if has_changes:
+        parts = []
+        added = sum(v for v in ad.values() if v > 0)
+        removed = sum(abs(v) for v in ad.values() if v < 0)
+        if added:
+            parts.append(f"+{added}")
+        if removed:
+            parts.append(f"−{removed}")
+        text += f"  (изменения: {', '.join(parts)})"
+    text += "\n\n"
+    counts_line = "".join(f"{(ex[val] + ad[val]):>4}" for val in [1, 2, 3, 4, 5])
+    text += f"<code>Оценки   1   2   3   4   5\nКол-во{counts_line}</code>\n\n"
 
     kb = InlineKeyboardBuilder()
 
@@ -321,35 +334,22 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
 
     # Plus buttons
     for val in [1, 2, 3, 4, 5]:
-        kb.button(text="+", callback_data=f"cnt:{val}:+")
-
-    # Counts row
-    for val in [1, 2, 3, 4, 5]:
-        total_val = ex[val] + ad[val]
-        kb.button(text=str(total_val), callback_data="cnt:noop")
+        kb.button(text="  +  ", callback_data=f"cnt:{val}:+")
 
     # Minus buttons
     for val in [1, 2, 3, 4, 5]:
-        kb.button(text="−", callback_data=f"cnt:{val}:-")
+        kb.button(text="  −  ", callback_data=f"cnt:{val}:-")
 
     # Action buttons
     if has_changes:
-        parts = []
-        added = sum(v for v in ad.values() if v > 0)
-        removed = sum(abs(v) for v in ad.values() if v < 0)
-        if added:
-            parts.append(f"+{added}")
-        if removed:
-            parts.append(f"−{removed}")
-        label = f"✅ Сохранить ({', '.join(parts)})"
-        kb.button(text=label, callback_data="cnt:save")
+        kb.button(text="✅ Сохранить", callback_data="cnt:save")
     else:
         kb.button(text="💾 Сохранить", callback_data="cnt:noop")
 
     if exist_total > 0:
         kb.button(text="🗑 Сбросить", callback_data="cnt:reset")
     kb.button(text="❌ Отмена", callback_data="cnt:cancel")
-    kb.adjust(5, 5, 5, 5, 2, 1)
+    kb.adjust(5, 5, 5, 2, 1)
 
     await message.edit_text(text, reply_markup=kb.as_markup())
 

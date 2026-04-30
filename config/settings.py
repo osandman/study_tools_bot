@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
+    # Admin
+    admin_username: str = "admin"
+    admin_password: str = "change_me"
+    admin_secret_key: str = "change_me_too"
+    admin_host: str = "0.0.0.0"
+    admin_port: int = 8080
+
     @property
     def database_url(self) -> str:
         return (

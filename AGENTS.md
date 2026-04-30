@@ -11,6 +11,7 @@
 - Run with containers: `docker compose up --build`
 - Apply migrations: `alembic upgrade head`
 - Create migration: `alembic revision --autogenerate -m "..."`
+- Run tests: `docker compose exec -T bot python -m pytest tests/ -v`
 
 ## Database And Migrations
 - `docker-compose.yml` exposes Postgres on host `127.0.0.1:5433`, but `.env.example` defaults to `POSTGRES_PORT=5432`. If the app runs on the host against the compose DB, set `POSTGRES_PORT=5433`.
@@ -31,5 +32,5 @@
 - Subjects are now sorted alphabetically. `Subject.sort_order` is no longer used in queries.
 
 ## Verification Reality
-- There is no repo-local test, lint, typecheck, CI, or task-runner config at the moment. Do not claim `pytest`, `ruff`, or `mypy` passed unless you add that tooling yourself.
+- E2E tests live in `tests/` and run via `docker compose exec -T bot python -m pytest tests/ -v` with SQLite in-memory + aiogram mocks.
 - For manual smoke testing, `/start` creates the user row and seeds default subjects.

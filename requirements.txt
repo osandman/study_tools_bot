@@ -7,3 +7,12 @@ pydantic-settings==2.9.1
 python-dotenv==1.1.0
 apscheduler==3.11.0
 loguru==0.7.3
+pytest==8.3.4
+pytest-asyncio==0.25.2
+aiosqlite==0.21.0
+fastapi==0.115.5
+uvicorn==0.32.1
+jinja2==3.1.4
+python-multipart==0.0.17
+httpx==0.28.1
+itsdangerous==2.2.0

@@ -49,6 +49,10 @@ async def cmd_start(message: types.Message, session: AsyncSession):
             reply_markup=ReplyKeyboardRemove(),
         )
     else:
+        if user.is_blocked:
+            await message.answer("Ваш доступ к боту ограничен.")
+            return
+
         # Update user info if changed
         if user.username != message.from_user.username:
             user.username = message.from_user.username

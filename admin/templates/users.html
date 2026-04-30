@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;">
+  <h1>Пользователи</h1>
+  <form class="inline" method="post" action="/admin/logout">
+    <button class="secondary" type="submit">Выйти</button>
+  </form>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Telegram ID</th>
+      <th>Username</th>
+      <th>Имя</th>
+      <th>Регистрация</th>
+      <th>Последняя активность</th>
+      <th>Статус</th>
+      <th>Действие</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for user in users %}
+    <tr>
+      <td>{{ user.id }}</td>
+      <td>{{ user.telegram_id }}</td>
+      <td>{{ user.username or '' }}</td>
+      <td>{{ user.first_name or '' }}</td>
+      <td>{{ user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else '' }}</td>
+      <td>{{ user.last_seen_at.strftime('%d.%m.%Y %H:%M') if user.last_seen_at else '—' }}</td>
+      <td>
+        {% if user.is_blocked %}
+          <span class="blocked">Заблокирован</span>
+        {% else %}
+          <span class="active">Активен</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if user.is_blocked %}
+          <form class="inline" method="post" action="/admin/users/{{ user.id }}/unblock">
+            <button class="ok" type="submit">Разблокировать</button>
+          </form>
+        {% else %}
+          <form class="inline" method="post" action="/admin/users/{{ user.id }}/block">
+            <button class="danger" type="submit">Заблокировать</button>
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

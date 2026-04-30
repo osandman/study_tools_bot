@@ -30,5 +30,21 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
 
+  admin:
+    build: .
+    container_name: study_tools_admin
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    command: uvicorn admin.app:app --host 0.0.0.0 --port 8080
+    ports:
+      - "127.0.0.1:8080:8080"
+
 volumes:
   pgdata:
