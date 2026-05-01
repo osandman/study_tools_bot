@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:16.9-alpine
-    container_name: study_tools_db
+    container_name: study_tools_bot_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-study_bot}
@@ -19,7 +19,7 @@ services:
 
   bot:
     build: .
-    container_name: study_tools_bot
+    container_name: study_tools_bot_app
     restart: unless-stopped
     depends_on:
       postgres:
@@ -32,7 +32,7 @@ services:
 
   admin:
     build: .
-    container_name: study_tools_admin
+    container_name: study_tools_bot_admin
     restart: unless-stopped
     depends_on:
       postgres:
