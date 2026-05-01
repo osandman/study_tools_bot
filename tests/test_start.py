@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 import pytest
 from sqlalchemy import select
 
@@ -40,3 +38,14 @@ async def test_start_existing_user(tg_message, session, registered_user):
     )
     user = result.scalar_one()
     assert user.username == "testuser"
+
+
+@pytest.mark.asyncio
+async def test_start_blocked_user_denied(tg_message, session, registered_user):
+    registered_user.is_blocked = True
+    await session.commit()
+
+    await cmd_start(tg_message, session)
+
+    text = tg_message.answer.call_args[0][0]
+    assert "ограничен" in text.lower()

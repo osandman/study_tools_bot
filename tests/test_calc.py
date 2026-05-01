@@ -68,5 +68,22 @@ async def test_calc_period_switch(tg_callback, session, registered_user):
 
     await cb_calc_period(tg_callback, session)
 
+    await session.refresh(registered_user)
+    assert registered_user.active_period == "t2"
+
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "Калькулятор оценок" in text
+
+
+@pytest.mark.asyncio
+async def test_calc_period_switch_without_subjects(tg_callback, session, registered_user):
+    from sqlalchemy import delete
+
+    await session.execute(delete(Subject).where(Subject.user_id == registered_user.id))
+    await session.commit()
+
+    tg_callback.data = "calc_period:t3"
+    await cb_calc_period(tg_callback, session)
+
     text = tg_callback.message.edit_text.call_args[0][0]
     assert "Калькулятор оценок" in text

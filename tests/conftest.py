@@ -34,6 +34,17 @@ async def _init_db(engine):
         await conn.run_sync(Base.metadata.drop_all)
 
 
+@pytest.fixture(autouse=True)
+def _clear_grades_handler_state():
+    from bot.handlers import grades as grades_handler
+
+    grades_handler._add_state.clear()
+    grades_handler._pending_renames.clear()
+    yield
+    grades_handler._add_state.clear()
+    grades_handler._pending_renames.clear()
+
+
 @pytest.fixture
 async def session(_session_factory):
     async with _session_factory() as sess:
