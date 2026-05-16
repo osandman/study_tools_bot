@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.utils.users import require_registered_message, require_registered_callback
 from bot.utils.periods import get_active_period
 from bot.utils.grades import grade_emoji
+from bot.utils.subjects import format_subject_name
 from database.models import Subject, Grade
 from database.models.grade import get_periods
 
@@ -119,7 +120,7 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
         total = sum(counts.values())
 
         if total == 0:
-            ungraded_names.append(subj.name)
+            ungraded_names.append(format_subject_name(subj.name))
             continue
 
         normalized_counts = {v: counts.get(v, 0) for v in range(1, 6)}
@@ -129,7 +130,7 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
 
         graded.append(
             {
-                "name": subj.name,
+                "name": format_subject_name(subj.name),
                 "counts": normalized_counts,
                 "total": total,
                 "avg": avg,
@@ -164,7 +165,7 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
 
     for item in graded:
         emoji = grade_emoji(item["rec"])
-        text += f"📕 <b>{item['name']}</b>\n"
+        text += f"<b>{item['name']}</b>\n"
         text += f"{emoji} Средний: <b>{item['avg']:.2f}</b> | Рекомендуемая: <b>{item['rec']}</b>\n"
         text += _format_counts_table(item["counts"]) + "\n"
 

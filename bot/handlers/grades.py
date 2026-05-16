@@ -1,3 +1,5 @@
+import math
+
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -9,8 +11,82 @@ from database.models.grade import Grade, PERIOD_SYSTEMS, get_periods
 from bot.utils.users import require_registered_message, require_registered_callback
 from bot.utils.periods import get_active_period
 from bot.utils.grades import grade_emoji
+from bot.utils.subjects import format_subject_name
 
 router = Router()
+
+
+def _pluralize_ru(count: int, one: str, few: str, many: str) -> str:
+    remainder10 = count % 10
+    remainder100 = count % 100
+    if remainder10 == 1 and remainder100 != 11:
+        return one
+    if 2 <= remainder10 <= 4 and not 12 <= remainder100 <= 14:
+        return few
+    return many
+
+
+def _format_forecast_option(grade_value: int, count: int) -> str:
+    words = {
+        5: ("пятёрка", "пятёрки", "пятёрок"),
+        4: ("четвёрка", "четвёрки", "четвёрок"),
+        3: ("тройка", "тройки", "троек"),
+    }
+    one, few, many = words.get(grade_value, (f"оценка {grade_value}",) * 3)
+    return f"{count} {_pluralize_ru(count, one, few, many)}"
+
+
+def _needed_count(total_sum: int, total: int, target_avg: float, grade_value: int) -> int | None:
+    if grade_value <= target_avg:
+        return None
+    needed = (target_avg * total - total_sum) / (grade_value - target_avg)
+    return max(0, math.ceil(needed))
+
+
+def _build_counter_forecast(counts: dict[int, int]) -> dict[int, list[tuple[int, int]]]:
+    total = sum(counts.values())
+    if total == 0:
+        return {}
+
+    total_sum = sum(value * counts.get(value, 0) for value in range(1, 6))
+    avg = total_sum / total
+    thresholds = {
+        5: (4.5, [5]),
+        4: (3.5, [5, 4]),
+    }
+    results: dict[int, list[tuple[int, int]]] = {}
+
+    for target, (threshold, grades) in thresholds.items():
+        if avg >= threshold:
+            results[target] = []
+            continue
+
+        options = []
+        for grade_value in grades:
+            needed = _needed_count(total_sum, total, threshold, grade_value)
+            if needed is not None:
+                options.append((grade_value, needed))
+        results[target] = options
+
+    return results
+
+
+def _format_counter_forecast_line(target_label: str, options: list[tuple[int, int]]) -> str:
+    if not options:
+        return f"До «{target_label}»: <b>уже хватает</b>"
+    return f"До «{target_label}»: <b>{' или '.join(_format_forecast_option(grade, count) for grade, count in options)}</b>"
+
+
+def _format_counts_header() -> str:
+    return " ".join(f"[{val}]" for val in [1, 2, 3, 4, 5])
+
+
+def _format_counts_values(counts: dict[int, int]) -> str:
+    return " ".join(f"{counts[val]:^3}" for val in [1, 2, 3, 4, 5])
+
+
+def _format_counts_diff_row(add: dict[int, int]) -> str:
+    return " ".join(f"{add[val]:+d}".ljust(3) if add.get(val, 0) else " " * 3 for val in [1, 2, 3, 4, 5])
 
 
 async def _render_grades_list(
@@ -36,6 +112,10 @@ async def _render_grades_list(
     period_label = periods.get(period, period)
     text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
     kb = InlineKeyboardBuilder()
+    has_undo = False
+    if _last_saved_action.get(user_id, {}).get("period") == period:
+        kb.button(text="↩️ Отменить последнее сохранение", callback_data="undo_last_save")
+        has_undo = True
 
     for subj in subjects:
         avg_result = await session.execute(
@@ -55,7 +135,7 @@ async def _render_grades_list(
         else:
             text += f"⚪ {subj.name} —\n"
 
-        kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
+        kb.button(text=format_subject_name(subj.name), callback_data=f"subject:{subj.id}:{period}")
 
     # Overall average
     if subjects:
@@ -68,7 +148,10 @@ async def _render_grades_list(
             overall_emoji = grade_emoji(overall_avg)
             text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
 
-    kb.adjust(*[2] * ((len(subjects) + 1) // 2))
+    if has_undo:
+        kb.adjust(1, *[2] * ((len(subjects) + 1) // 2))
+    else:
+        kb.adjust(*[2] * ((len(subjects) + 1) // 2))
     await message.edit_text(text, reply_markup=kb.as_markup())
 
 
@@ -208,6 +291,10 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
     period_label = periods_labels.get(period, period)
     text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
     kb = InlineKeyboardBuilder()
+    has_undo = False
+    if _last_saved_action.get(user.id, {}).get("period") == period:
+        kb.button(text="↩️ Отменить последнее сохранение", callback_data="undo_last_save")
+        has_undo = True
 
     for subj in subjects:
         avg_result = await session.execute(
@@ -227,7 +314,7 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
         else:
             text += f"⚪ {subj.name} —\n"
 
-        kb.button(text=subj.name, callback_data=f"subject:{subj.id}:{period}")
+        kb.button(text=format_subject_name(subj.name), callback_data=f"subject:{subj.id}:{period}")
 
     # Overall average
     overall_result = await session.execute(
@@ -239,7 +326,10 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
         overall_emoji = "🟢" if overall_avg >= 4.0 else "🟡" if overall_avg >= 3.0 else "🔴"
         text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
 
-    kb.adjust(*[2] * ((len(subjects) + 1) // 2))
+    if has_undo:
+        kb.adjust(1, *[2] * ((len(subjects) + 1) // 2))
+    else:
+        kb.adjust(*[2] * ((len(subjects) + 1) // 2))
     await message.answer(text, reply_markup=kb.as_markup())
 
 
@@ -248,6 +338,7 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
 
 # In-memory state: {telegram_id: {subject_id, period, counts: {5:0, 4:0, 3:0, 2:0, 1:0}}}
 _add_state: dict[int, dict] = {}
+_last_saved_action: dict[int, dict] = {}
 
 
 @router.callback_query(F.data.startswith("subject:"))
@@ -302,13 +393,16 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
 
     ex = state["existing"]
     ad = state["add"]
+
+    current_counts = {val: ex[val] + ad[val] for val in [1, 2, 3, 4, 5]}
     new_total = sum(ad.values())
     exist_total = sum(ex.values())
+    total_grades = exist_total + new_total
     has_changes = any(v != 0 for v in ad.values())
 
-    text = f"➕ <b>{subject_name}</b>\n"
+    text = f"<b>{format_subject_name(subject_name)}</b>\n"
     if exist_total > 0:
-        text += f"Всего: <b>{exist_total + new_total}</b>"
+        text += f"Всего: <b>{total_grades}</b>"
     else:
         text += f"Всего: <b>{new_total}</b>"
 
@@ -321,9 +415,28 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
         if removed:
             parts.append(f"−{removed}")
         text += f"  (изменения: {', '.join(parts)})"
+
+    if total_grades > 0:
+        current_sum = sum(val * count for val, count in current_counts.items())
+        current_avg = current_sum / total_grades
+        forecast = _build_counter_forecast(current_counts)
+
+        text += f"\n📊 Средний балл: <b>{current_avg:.2f}</b> {grade_emoji(current_avg)}"
+        text += f"\n🎯 {_format_counter_forecast_line('4', forecast.get(4, []))}"
+        text += f"\n🏆 {_format_counter_forecast_line('5', forecast.get(5, []))}"
+    else:
+        text += "\n📊 Средний балл: <b>—</b>"
+        text += "\n🎯 До «4»: <b>добавь хотя бы одну оценку</b>"
+        text += "\n🏆 До «5»: <b>добавь хотя бы одну оценку</b>"
+
     text += "\n\n"
-    counts_line = "".join(f"{(ex[val] + ad[val]):>4}" for val in [1, 2, 3, 4, 5])
-    text += f"<code>Оценки   1   2   3   4   5\nКол-во{counts_line}</code>\n\n"
+    header_line = _format_counts_header()
+    counts_line = _format_counts_values(current_counts)
+    if has_changes:
+        diff_line = _format_counts_diff_row(ad)
+        text += f"<code>{header_line}\n{counts_line}\n{diff_line}</code>\n\n"
+    else:
+        text += f"<code>{header_line}\n{counts_line}</code>\n\n"
 
     kb = InlineKeyboardBuilder()
 
@@ -340,15 +453,15 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
     for val in [1, 2, 3, 4, 5]:
         kb.button(text="  −  ", callback_data=f"cnt:{val}:-")
 
-    # Action buttons
+    # Action buttons: secondary on the left, primary on the right
+    kb.button(text="❌ Отмена", callback_data="cnt:cancel")
     if has_changes:
         kb.button(text="✅ Сохранить", callback_data="cnt:save")
     else:
         kb.button(text="💾 Сохранить", callback_data="cnt:noop")
 
-    if exist_total > 0:
+    if has_changes:
         kb.button(text="🗑 Сбросить", callback_data="cnt:reset")
-    kb.button(text="❌ Отмена", callback_data="cnt:cancel")
     kb.adjust(5, 5, 5, 2, 1)
 
     await message.edit_text(text, reply_markup=kb.as_markup())
@@ -384,30 +497,14 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
         return
 
     if action == "reset":
-        subject_id = state["subject_id"]
-        period = state["period"]
+        state["add"] = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
 
-        from sqlalchemy import delete
-        await session.execute(
-            delete(Grade).where(
-                Grade.subject_id == subject_id,
-                Grade.user_id == user.id,
-                Grade.period == period,
-            )
+        result = await session.execute(
+            select(Subject.name).where(Subject.id == state["subject_id"])
         )
-        await session.commit()
-        await callback.answer("🗑 Оценки сброшены", )
-
-        _add_state.pop(callback.from_user.id, None)
-
-        await _render_grades_list(
-            callback.message,
-            session,
-            user.id,
-            user.period_system,
-            period,
-            get_periods(user.period_system),
-        )
+        name = result.scalar() or "?"
+        await callback.answer("↺ Изменения сброшены")
+        await _render_counter(callback.message, callback.from_user.id, name)
         return
 
     if action == "noop":
@@ -420,6 +517,8 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
         add_counts = state["add"]
 
         grades_to_add = []
+        deleted_values = []
+        added_grade_ids = []
         for val, count in add_counts.items():
             if count > 0:
                 for _ in range(count):
@@ -438,13 +537,22 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
                     .limit(abs(count))
                 )
                 for g in to_delete.scalars().all():
+                    deleted_values.append(g.value)
                     await session.delete(g)
 
         if grades_to_add:
             session.add_all(grades_to_add)
+            await session.flush()
+            added_grade_ids = [grade.id for grade in grades_to_add if grade.id is not None]
         await session.commit()
 
         _add_state.pop(callback.from_user.id, None)
+        _last_saved_action[user.id] = {
+            "subject_id": subject_id,
+            "period": period,
+            "added_grade_ids": added_grade_ids,
+            "deleted_values": deleted_values,
+        }
 
         added = sum(v for v in add_counts.values() if v > 0)
         removed = sum(abs(v) for v in add_counts.values() if v < 0)
@@ -491,6 +599,60 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
     await callback.answer()
 
 
+@router.callback_query(F.data == "undo_last_save")
+async def cb_undo_last_save(callback: types.CallbackQuery, session: AsyncSession):
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
+
+    action = _last_saved_action.get(user.id)
+    if not action:
+        await callback.answer("Нечего отменять")
+        return
+
+    subject_id = action["subject_id"]
+    period = action["period"]
+    added_grade_ids = action.get("added_grade_ids", [])
+    deleted_values = action.get("deleted_values", [])
+
+    if deleted_values:
+        subject_exists = await session.scalar(
+            select(Subject.id).where(Subject.id == subject_id, Subject.user_id == user.id)
+        )
+        if subject_exists is None:
+            _last_saved_action.pop(user.id, None)
+            await callback.answer("Предмет уже удалён — отмена недоступна")
+            return
+
+    if added_grade_ids:
+        added_rows = await session.execute(
+            select(Grade).where(Grade.user_id == user.id, Grade.id.in_(added_grade_ids))
+        )
+        for grade in added_rows.scalars().all():
+            await session.delete(grade)
+
+    for value in deleted_values:
+        session.add(Grade(
+            user_id=user.id,
+            subject_id=subject_id,
+            value=value,
+            period=period,
+        ))
+
+    await session.commit()
+    _last_saved_action.pop(user.id, None)
+
+    await callback.answer("↩️ Последнее сохранение отменено")
+    await _render_grades_list(
+        callback.message,
+        session,
+        user.id,
+        user.period_system,
+        period,
+        get_periods(user.period_system),
+    )
+
+
 # ─── /subjects — управление предметами ────────────────────────────────────
 
 _pending_renames: dict[int, int] = {}
@@ -513,7 +675,7 @@ async def cmd_subjects(message: types.Message, session: AsyncSession):
 
     kb = InlineKeyboardBuilder()
     for subj in subjects:
-        kb.button(text=subj.name, callback_data=f"subj:{subj.id}")
+        kb.button(text=format_subject_name(subj.name), callback_data=f"subj:{subj.id}")
     kb.button(text="➕ Добавить", callback_data="add_subject")
     kb.adjust(2)
 
@@ -540,7 +702,7 @@ async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
     )
     count = count_result.scalar()
 
-    text = f"📚 <b>{subject.name}</b>\nОценок: {count}"
+    text = f"<b>{format_subject_name(subject.name)}</b>\nОценок: {count}"
 
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Изменить", callback_data=f"edit_subject:{subject_id}")
@@ -565,7 +727,7 @@ async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSessi
 
     kb = InlineKeyboardBuilder()
     for subj in subjects:
-        kb.button(text=subj.name, callback_data=f"subj:{subj.id}")
+        kb.button(text=format_subject_name(subj.name), callback_data=f"subj:{subj.id}")
     kb.button(text="➕ Добавить", callback_data="add_subject")
     kb.adjust(2)
 
@@ -590,11 +752,52 @@ async def cb_edit_subject_prompt(callback: types.CallbackQuery, session: AsyncSe
 
     _pending_renames[callback.from_user.id] = subject_id
 
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="📋 Скопировать текущее имя",
+        copy_text=types.CopyTextButton(text=subject.name),
+    )
+    kb.button(text="❌ Отмена", callback_data="cancel_subject_edit")
+    kb.adjust(1, 1)
+
     await callback.message.edit_text(
-        f"✏️ Текущее название: <b>{subject.name}</b>\n"
-        "Отправь новое название одним сообщением:"
+        f"Текущее название: <b>{format_subject_name(subject.name)}</b>\n"
+        "Нажми «Скопировать текущее имя», вставь и поправь только нужные буквы, затем отправь новое название сообщением:",
+        reply_markup=kb.as_markup(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_subject_edit")
+async def cb_cancel_subject_edit(callback: types.CallbackQuery, session: AsyncSession):
+    pending = _pending_renames.pop(callback.from_user.id, None)
+    user = await require_registered_callback(callback, session)
+    if user is None:
+        return
+
+    if pending and pending != -1:
+        result = await session.execute(
+            select(Subject).where(Subject.id == pending, Subject.user_id == user.id)
+        )
+        subject = result.scalar_one_or_none()
+        if subject:
+            count_result = await session.execute(
+                select(func.count(Grade.id)).where(Grade.subject_id == pending, Grade.user_id == user.id)
+            )
+            count = count_result.scalar()
+
+            text = f"<b>{format_subject_name(subject.name)}</b>\nОценок: {count}"
+            kb = InlineKeyboardBuilder()
+            kb.button(text="✏️ Изменить", callback_data=f"edit_subject:{pending}")
+            kb.button(text="🗑 Удалить", callback_data=f"del_subject:{pending}")
+            kb.button(text="⬅️ Назад", callback_data="back_to_subjects")
+            kb.adjust(2, 1)
+
+            await callback.message.edit_text(text, reply_markup=kb.as_markup())
+            await callback.answer("Изменение отменено")
+            return
+
+    await cb_back_to_subjects(callback, session)
 
 
 @router.callback_query(F.data.startswith("del_subject:"))

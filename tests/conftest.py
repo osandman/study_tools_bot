@@ -39,9 +39,11 @@ def _clear_grades_handler_state():
     from bot.handlers import grades as grades_handler
 
     grades_handler._add_state.clear()
+    grades_handler._last_saved_action.clear()
     grades_handler._pending_renames.clear()
     yield
     grades_handler._add_state.clear()
+    grades_handler._last_saved_action.clear()
     grades_handler._pending_renames.clear()
 
 

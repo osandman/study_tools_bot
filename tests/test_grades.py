@@ -11,12 +11,15 @@ from bot.handlers.grades import (
     cb_set_active_period,
     cb_subject_counter,
     cb_counter_action,
+    cb_undo_last_save,
     cb_add_subject_prompt,
     cb_edit_subject_prompt,
+    cb_cancel_subject_edit,
     cb_delete_subject,
     handle_subject_text,
 )
 from bot.utils.periods import get_active_period
+from bot.utils.subjects import format_subject_name
 
 
 @pytest.mark.asyncio
@@ -55,9 +58,15 @@ async def test_subjects_list(tg_message, session, registered_user):
 async def test_subjects_alphabetical_order(tg_message, session, registered_user):
     await cmd_subjects(tg_message, session)
 
+    subjects = (
+        await session.execute(
+            select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name)
+        )
+    ).scalars().all()
+
     markup = tg_message.answer.call_args.kwargs["reply_markup"]
     button_names = [button.text for row in markup.inline_keyboard for button in row if button.callback_data != "add_subject"]
-    assert button_names == sorted(button_names)
+    assert button_names == [format_subject_name(subject.name) for subject in subjects]
 
 
 @pytest.mark.asyncio
@@ -82,7 +91,79 @@ async def test_subject_counter_opens(tg_callback, session, registered_user):
 
     tg_callback.message.edit_text.assert_called_once()
     text = tg_callback.message.edit_text.call_args[0][0]
-    assert "➕" in text
+    assert format_subject_name("Математика") in text
+    assert "Средний балл" in text
+    assert "До «4»" in text
+    assert "До «5»" in text
+
+
+@pytest.mark.asyncio
+async def test_counter_updates_live_average_and_targets(tg_callback, session, registered_user):
+    period = get_active_period(registered_user)
+    subject = await session.scalar(
+        select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
+    )
+
+    from bot.handlers.grades import _add_state
+    _add_state[tg_callback.from_user.id] = {
+        "subject_id": subject.id,
+        "period": period,
+        "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
+        "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
+    }
+    tg_callback.data = "cnt:5:+"
+
+    await cb_counter_action(tg_callback, session)
+
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "Средний балл: <b>5.00</b>" in text
+    assert "До «4»: <b>уже хватает</b>" in text
+    assert "До «5»: <b>уже хватает</b>" in text
+
+
+@pytest.mark.asyncio
+async def test_counter_shows_smart_forecast_options(tg_callback, session, registered_user):
+    period = get_active_period(registered_user)
+    subject = await session.scalar(
+        select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
+    )
+    session.add(Grade(user_id=registered_user.id, subject_id=subject.id, value=3, period=period))
+    await session.commit()
+
+    tg_callback.data = f"subject:{subject.id}:{period}"
+    await cb_subject_counter(tg_callback, session)
+
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "До «4»: <b>1 пятёрка или 1 четвёрка</b>" in text
+    assert "До «5»: <b>3 пятёрки</b>" in text
+    assert "[1] [2] [3] [4] [5]" in text
+    assert "0   0   1   0   0" in text
+
+
+@pytest.mark.asyncio
+async def test_counter_shows_diff_row_when_changed(tg_callback, session, registered_user):
+    period = get_active_period(registered_user)
+    subject = await session.scalar(
+        select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
+    )
+    session.add(Grade(user_id=registered_user.id, subject_id=subject.id, value=4, period=period))
+    await session.commit()
+
+    from bot.handlers.grades import _add_state
+    _add_state[tg_callback.from_user.id] = {
+        "subject_id": subject.id,
+        "period": period,
+        "existing": {5: 0, 4: 1, 3: 0, 2: 0, 1: 0},
+        "add": {5: 1, 4: 0, 3: 0, 2: 0, 1: 0},
+    }
+    tg_callback.data = "cnt:5:+"
+
+    await cb_counter_action(tg_callback, session)
+
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "[1] [2] [3] [4] [5]" in text
+    assert "0   0   0   1   2" in text
+    assert "+2" in text
 
 
 @pytest.mark.asyncio
@@ -114,6 +195,38 @@ async def test_counter_save(tg_callback, session, registered_user):
 
 
 @pytest.mark.asyncio
+async def test_undo_last_save_restores_previous_state(tg_callback, session, registered_user):
+    period = get_active_period(registered_user)
+    subject = await session.scalar(
+        select(Subject).where(Subject.user_id == registered_user.id).limit(1)
+    )
+
+    from bot.handlers.grades import _add_state
+    _add_state[tg_callback.from_user.id] = {
+        "subject_id": subject.id,
+        "period": period,
+        "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
+        "add": {5: 1, 4: 0, 3: 0, 2: 0, 1: 0},
+    }
+    tg_callback.data = "cnt:save"
+
+    await cb_counter_action(tg_callback, session)
+
+    markup = tg_callback.message.edit_text.call_args.kwargs["reply_markup"]
+    callback_data = [button.callback_data for row in markup.inline_keyboard for button in row]
+    assert "undo_last_save" in callback_data
+
+    tg_callback.data = "undo_last_save"
+    await cb_undo_last_save(tg_callback, session)
+
+    result = await session.execute(
+        select(Grade).where(Grade.subject_id == subject.id, Grade.user_id == registered_user.id)
+    )
+    grades = result.scalars().all()
+    assert len(grades) == 0
+
+
+@pytest.mark.asyncio
 async def test_counter_cancel_returns_to_list(tg_callback, session, registered_user):
     period = get_active_period(registered_user)
     subject = await session.scalar(
@@ -136,7 +249,7 @@ async def test_counter_cancel_returns_to_list(tg_callback, session, registered_u
 
 
 @pytest.mark.asyncio
-async def test_counter_reset(tg_callback, session, registered_user):
+async def test_counter_reset_discards_unsaved_changes_only(tg_callback, session, registered_user):
     period = get_active_period(registered_user)
     subject = await session.scalar(
         select(Subject).where(Subject.user_id == registered_user.id).limit(1)
@@ -150,7 +263,7 @@ async def test_counter_reset(tg_callback, session, registered_user):
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 1, 3: 1, 2: 0, 1: 0},
-        "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
+        "add": {5: 1, 4: -1, 3: 0, 2: 0, 1: 0},
     }
     tg_callback.data = "cnt:reset"
 
@@ -160,7 +273,13 @@ async def test_counter_reset(tg_callback, session, registered_user):
         select(Grade).where(Grade.subject_id == subject.id, Grade.user_id == registered_user.id)
     )
     grades = result.scalars().all()
-    assert len(grades) == 0
+    assert len(grades) == 2
+    values = sorted(g.value for g in grades)
+    assert values == [3, 4]
+
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "[1] [2] [3] [4] [5]" in text
+    assert "+1" not in text and "-1" not in text
 
 
 @pytest.mark.asyncio
@@ -219,6 +338,21 @@ async def test_subject_add_flow_creates_subject(tg_callback, tg_message, session
 
 
 @pytest.mark.asyncio
+async def test_subject_rename_prompt_has_copy_button(tg_callback, session, registered_user):
+    subject = await session.scalar(
+        select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
+    )
+
+    tg_callback.data = f"edit_subject:{subject.id}"
+    await cb_edit_subject_prompt(tg_callback, session)
+
+    markup = tg_callback.message.edit_text.call_args.kwargs["reply_markup"]
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert any(button.copy_text and button.copy_text.text == subject.name for button in buttons)
+    assert any(button.callback_data == "cancel_subject_edit" for button in buttons)
+
+
+@pytest.mark.asyncio
 async def test_subject_rename_flow_updates_name(tg_callback, tg_message, session, registered_user):
     subject = await session.scalar(
         select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
@@ -232,6 +366,23 @@ async def test_subject_rename_flow_updates_name(tg_callback, tg_message, session
 
     await session.refresh(subject)
     assert subject.name == "Новый предмет"
+
+
+@pytest.mark.asyncio
+async def test_subject_rename_cancel_returns_to_card(tg_callback, session, registered_user):
+    subject = await session.scalar(
+        select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
+    )
+
+    tg_callback.data = f"edit_subject:{subject.id}"
+    await cb_edit_subject_prompt(tg_callback, session)
+    tg_callback.data = "cancel_subject_edit"
+
+    await cb_cancel_subject_edit(tg_callback, session)
+
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert subject.name in text
+    assert "Оценок:" in text
 
 
 @pytest.mark.asyncio
