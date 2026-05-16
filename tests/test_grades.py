@@ -91,7 +91,7 @@ async def test_subject_counter_opens(tg_callback, session, registered_user):
 
     tg_callback.message.edit_text.assert_called_once()
     text = tg_callback.message.edit_text.call_args[0][0]
-    assert format_subject_name("Математика") in text
+    assert format_subject_name("Алгебра") in text
     assert "Средний балл" in text
     assert "До «4»" in text
     assert "До «5»" in text
@@ -325,6 +325,9 @@ async def test_subject_add_flow_creates_subject(tg_callback, tg_message, session
     await cb_add_subject_prompt(tg_callback, session)
 
     assert _pending_renames[registered_user.telegram_id] == -1
+    markup = tg_callback.message.edit_text.call_args.kwargs["reply_markup"]
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert any(button.callback_data == "cancel_subject_edit" for button in buttons)
 
     tg_message.text = "Астрономия"
     await handle_subject_text(tg_message, session)
@@ -383,6 +386,17 @@ async def test_subject_rename_cancel_returns_to_card(tg_callback, session, regis
     text = tg_callback.message.edit_text.call_args[0][0]
     assert subject.name in text
     assert "Оценок:" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_free_text_without_pending_state_gets_helpful_reply(tg_message, session):
+    tg_message.text = "просто текст"
+
+    await handle_subject_text(tg_message, session)
+
+    text = tg_message.answer.call_args[0][0]
+    assert "Не понял сообщение" in text
 
 
 @pytest.mark.asyncio

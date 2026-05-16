@@ -1,6 +1,5 @@
 from aiogram import Router, types
 from aiogram.filters import CommandStart
-from aiogram.types import ReplyKeyboardRemove
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,13 +39,12 @@ async def cmd_start(message: types.Message, session: AsyncSession):
         await message.answer(
             f"👋 Привет, {message.from_user.first_name}!\n\n"
             "Я — Study Tools Bot, твой помощник в учёбе.\n\n"
-            "📚 Что я умею:\n"
-            "• Вести список предметов\n"
-            "• Сохранять и считать оценки\n"
-            "• Показывать средний балл\n"
-            "• Подсказывать, сколько оценок нужно до цели\n\n"
-            "Меню доступно через кнопку слева внизу.",
-            reply_markup=ReplyKeyboardRemove(),
+            "Команды, с которых удобно начать:\n"
+            "/subjects — список предметов: добавить, переименовать или удалить\n"
+            "/grades — оценки по предметам: посмотреть, добавить и быстро поправить\n"
+            "/calc — калькулятор среднего балла и прогноза до 4 или 5\n"
+            "/settings — выбор системы периодов и активного периода\n"
+            "/help — краткая памятка по боту",
         )
     else:
         if user.is_blocked:
@@ -60,6 +58,10 @@ async def cmd_start(message: types.Message, session: AsyncSession):
 
         await message.answer(
             f"С возвращением, {message.from_user.first_name}! 👋\n\n"
-            "Выбирай нужный раздел в меню.",
-            reply_markup=ReplyKeyboardRemove(),
+            "Доступные команды:\n"
+            "/subjects — список предметов и управление ими\n"
+            "/grades — оценки по предметам и быстрые изменения\n"
+            "/calc — средний балл и прогноз до нужной оценки\n"
+            "/settings — система периодов и активный период\n"
+            "/help — краткая справка",
         )

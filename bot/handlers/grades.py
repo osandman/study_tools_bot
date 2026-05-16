@@ -838,7 +838,10 @@ async def cb_add_subject_prompt(callback: types.CallbackQuery, session: AsyncSes
         return
 
     _pending_renames[callback.from_user.id] = -1
-    await callback.message.edit_text("📝 Напиши название нового предмета:")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="❌ Отмена", callback_data="cancel_subject_edit")
+    kb.adjust(1)
+    await callback.message.edit_text("📝 Напиши название нового предмета:", reply_markup=kb.as_markup())
     await callback.answer()
 
 
@@ -846,6 +849,10 @@ async def cb_add_subject_prompt(callback: types.CallbackQuery, session: AsyncSes
 async def handle_subject_text(message: types.Message, session: AsyncSession):
     pending = _pending_renames.get(message.from_user.id)
     if pending is None:
+        await message.answer(
+            "Не понял сообщение 🤔\n"
+            "Открой /help или выбери один из разделов кнопками ниже."
+        )
         return
 
     text = message.text.strip()
