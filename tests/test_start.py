@@ -14,7 +14,7 @@ async def test_start_new_user(tg_message, session):
     assert "Привет" in text
     assert "/subjects — список предметов" in text
     assert "/grades — оценки по предметам" in text
-    assert "/calc — калькулятор среднего балла и прогноза" in text
+    assert "/summary — сводка по всем предметам и прогноз" in text
     assert "нажимать на команды" not in text
     assert "reply_markup" not in tg_message.answer.call_args.kwargs
 

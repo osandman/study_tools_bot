@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy import select
 from unittest.mock import AsyncMock
+from aiogram.types import ReplyKeyboardRemove
 
 from database.models import Subject, Grade
 from bot.handlers.grades import (
@@ -50,8 +51,20 @@ async def test_grades_with_subjects(tg_message, session, registered_user):
 async def test_subjects_list(tg_message, session, registered_user):
     await cmd_subjects(tg_message, session)
 
-    text = tg_message.answer.call_args[0][0]
+    text = tg_message.answer.call_args_list[-1][0][0]
     assert "Твои предметы" in text
+
+
+@pytest.mark.asyncio
+async def test_subjects_clears_stale_bottom_keyboard(tg_message, session, registered_user):
+    await cmd_subjects(tg_message, session)
+
+    first_call = tg_message.answer.call_args_list[0]
+    assert isinstance(first_call.kwargs["reply_markup"], ReplyKeyboardRemove)
+
+    last_call = tg_message.answer.call_args_list[-1]
+    markup = last_call.kwargs["reply_markup"]
+    assert markup.inline_keyboard
 
 
 @pytest.mark.asyncio
@@ -400,13 +413,17 @@ async def test_free_text_without_pending_state_gets_helpful_reply(tg_message, se
 
 
 @pytest.mark.asyncio
-async def test_subject_delete_flow_removes_subject(tg_callback, session, registered_user, monkeypatch):
-    class DummyCallbackQuery:
+async def test_subject_delete_flow_removes_subject_and_returns_to_list(
+    tg_callback, session, registered_user, monkeypatch
+):
+    class FailingSyntheticCallbackQuery:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
-            self.answer = AsyncMock()
 
-    monkeypatch.setattr("bot.handlers.grades.types.CallbackQuery", DummyCallbackQuery)
+        async def answer(self, *args, **kwargs):
+            raise RuntimeError("synthetic callback must not be answered")
+
+    monkeypatch.setattr("bot.handlers.grades.types.CallbackQuery", FailingSyntheticCallbackQuery)
 
     subject = await session.scalar(
         select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
@@ -417,3 +434,8 @@ async def test_subject_delete_flow_removes_subject(tg_callback, session, registe
 
     result = await session.execute(select(Subject).where(Subject.id == subject.id))
     assert result.scalar_one_or_none() is None
+
+    tg_callback.message.edit_text.assert_called()
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "Твои предметы" in text or "Нет предметов" in text
+    tg_callback.answer.assert_called_once_with(f"🗑 Удалён: {subject.name}")

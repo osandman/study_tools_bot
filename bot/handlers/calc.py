@@ -1,4 +1,4 @@
-"""Handler for /calc — grade calculator with performance forecast."""
+"""Handler for /summary — grade summary with forecast."""
 
 import math
 
@@ -105,10 +105,10 @@ def _format_forecast_lines(forecast: dict[int, list[tuple[int, int]]], current_r
     return lines
 
 
-def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
-    """Build the calculator message text."""
+def _build_summary_text(subjects: list, period: str, periods: dict) -> str:
+    """Build the summary message text."""
     period_label = periods.get(period, period)
-    text = f"📊 <b>Калькулятор оценок</b>\n📅 {period_label}\n\n"
+    text = f"📊 <b>Сводка оценок</b>\n📅 {period_label}\n\n"
 
     graded = []
     ungraded_names = []
@@ -166,7 +166,8 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
     for item in graded:
         emoji = grade_emoji(item["rec"])
         text += f"<b>{item['name']}</b>\n"
-        text += f"{emoji} Средний: <b>{item['avg']:.2f}</b> | Рекомендуемая: <b>{item['rec']}</b>\n"
+        text += f"{emoji} Средний: <b>{item['avg']:.2f}</b>\n"
+        text += f"⭐ Рекомендуемая: <b>{item['rec']}</b>\n"
         text += _format_counts_table(item["counts"]) + "\n"
 
         forecast_lines = _format_forecast_lines(item["forecast"], item["rec"])
@@ -181,8 +182,8 @@ def _build_calc_text(subjects: list, period: str, periods: dict) -> str:
     return text
 
 
-@router.message(Command("calc"))
-async def cmd_calc(message: types.Message, session: AsyncSession):
+@router.message(Command("summary"))
+async def cmd_summary(message: types.Message, session: AsyncSession):
     user = await require_registered_message(message, session)
     if not user:
         return
@@ -213,19 +214,19 @@ async def cmd_calc(message: types.Message, session: AsyncSession):
     for subj in subjects:
         subj._grade_rows = grade_map.get(subj.id, [])
 
-    text = _build_calc_text(subjects, period, periods)
+    text = _build_summary_text(subjects, period, periods)
 
     kb = InlineKeyboardBuilder()
     for p_key, p_label in periods.items():
         marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"calc_period:{p_key}")
+        kb.button(text=f"{marker}{p_label}", callback_data=f"summary_period:{p_key}")
     kb.adjust(len(periods))
 
     await message.answer(text, reply_markup=kb.as_markup())
 
 
-@router.callback_query(F.data.startswith("calc_period:"))
-async def cb_calc_period(callback: types.CallbackQuery, session: AsyncSession):
+@router.callback_query(F.data.startswith("summary_period:") | F.data.startswith("calc_period:"))
+async def cb_summary_period(callback: types.CallbackQuery, session: AsyncSession):
     period = callback.data.split(":")[1]
     user = await require_registered_callback(callback, session)
     if not user:
@@ -255,12 +256,12 @@ async def cb_calc_period(callback: types.CallbackQuery, session: AsyncSession):
     for subj in subjects:
         subj._grade_rows = grade_map.get(subj.id, [])
 
-    text = _build_calc_text(subjects, period, periods)
+    text = _build_summary_text(subjects, period, periods)
 
     kb = InlineKeyboardBuilder()
     for p_key, p_label in periods.items():
         marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"calc_period:{p_key}")
+        kb.button(text=f"{marker}{p_label}", callback_data=f"summary_period:{p_key}")
     kb.adjust(len(periods))
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup())

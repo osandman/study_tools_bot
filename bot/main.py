@@ -33,7 +33,7 @@ async def on_startup(bot: Bot):
         BotCommand(command="start", description="Начать работу"),
         BotCommand(command="subjects", description="Мои предметы"),
         BotCommand(command="grades", description="Оценки по предметам"),
-        BotCommand(command="calc", description="Калькулятор оценок"),
+        BotCommand(command="summary", description="Сводка оценок"),
         BotCommand(command="settings", description="Настройки"),
         BotCommand(command="help", description="Справка"),
     ]

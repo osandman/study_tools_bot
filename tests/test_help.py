@@ -12,5 +12,5 @@ async def test_help_command(tg_message):
     assert "Как пользоваться ботом" in text
     assert "/subjects — Предметы" in text
     assert "/grades — Оценки" in text
-    assert "/calc — Калькулятор" in text
+    assert "/summary — Сводка" in text
     assert "/settings — Настройки" in text

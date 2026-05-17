@@ -658,11 +658,47 @@ async def cb_undo_last_save(callback: types.CallbackQuery, session: AsyncSession
 _pending_renames: dict[int, int] = {}
 
 
+async def _remove_stale_reply_keyboard(message: types.Message) -> None:
+    """Clear old bottom reply keyboards before showing inline controls."""
+    remover = await message.answer("\u2060", reply_markup=types.ReplyKeyboardRemove())
+    try:
+        await remover.delete()
+    except Exception:
+        pass
+
+
+async def _render_subjects_list(message: types.Message, session: AsyncSession, user_id: int) -> None:
+    result = await session.execute(
+        select(Subject).where(Subject.user_id == user_id).order_by(Subject.name)
+    )
+    subjects = result.scalars().all()
+
+    if not subjects:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="➕ Добавить", callback_data="add_subject")
+        kb.adjust(1)
+        await message.edit_text(
+            "📚 Нет предметов. Нажми «➕ Добавить» ниже или просто пришли название нового предмета.",
+            reply_markup=kb.as_markup(),
+        )
+        return
+
+    kb = InlineKeyboardBuilder()
+    for subj in subjects:
+        kb.button(text=format_subject_name(subj.name), callback_data=f"subj:{subj.id}")
+    kb.button(text="➕ Добавить", callback_data="add_subject")
+    kb.adjust(2)
+
+    await message.edit_text("📚 <b>Твои предметы</b>", reply_markup=kb.as_markup())
+
+
 @router.message(Command("subjects"))
 async def cmd_subjects(message: types.Message, session: AsyncSession):
     user = await require_registered_message(message, session)
     if user is None:
         return
+
+    await _remove_stale_reply_keyboard(message)
 
     result = await session.execute(
         select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
@@ -720,18 +756,7 @@ async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSessi
     if user is None:
         return
 
-    result = await session.execute(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
-    )
-    subjects = result.scalars().all()
-
-    kb = InlineKeyboardBuilder()
-    for subj in subjects:
-        kb.button(text=format_subject_name(subj.name), callback_data=f"subj:{subj.id}")
-    kb.button(text="➕ Добавить", callback_data="add_subject")
-    kb.adjust(2)
-
-    await callback.message.edit_text("📚 <b>Твои предметы</b>", reply_markup=kb.as_markup())
+    await _render_subjects_list(callback.message, session, user.id)
     await callback.answer()
 
 
@@ -819,16 +844,8 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
     await session.delete(subject)
     await session.commit()
 
+    await _render_subjects_list(callback.message, session, user.id)
     await callback.answer(f"🗑 Удалён: {name}", )
-
-    await cb_back_to_subjects(
-        types.CallbackQuery(
-            id=callback.id, from_user=callback.from_user,
-            chat_instance=callback.chat_instance, message=callback.message,
-            data="back_to_subjects",
-        ),
-        session,
-    )
 
 
 @router.callback_query(F.data == "add_subject")
