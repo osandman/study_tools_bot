@@ -110,3 +110,7 @@ docker compose exec -T bot python -m pytest tests/ -v
 
 - При старте бот также вызывает `Base.metadata.create_all()` для удобства локальной разработки.
 - В рабочих окружениях источником истины по схеме БД остаются миграции Alembic.
+- **Контейнер `study_tools_bot_postgres` общий с ЕГЭ-тренажёром** (`~/projects/ege_trainer_bot`, своя БД
+  `ege_trainer` и роль `ege_trainer`, сеть `study_tools_bot_default`). `docker compose down` здесь останавливает
+  и БД тренажёра; поднять только Postgres: `docker compose up -d postgres`. У всех баз инстанса снят CONNECT
+  для PUBLIC (суперпользователя `study_bot` это не затрагивает).
