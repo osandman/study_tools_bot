@@ -11,8 +11,12 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    mem_limit: 256m
+    memswap_limit: 384m
+    cpus: "0.40"
+    pids_limit: 128
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-study_bot}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-study_bot} -d ${POSTGRES_DB:-study_tools}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,6 +33,10 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+    mem_limit: 192m
+    memswap_limit: 256m
+    cpus: "0.25"
+    pids_limit: 64
 
   admin:
     build: .
@@ -43,6 +51,10 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
     command: uvicorn admin.app:app --host 0.0.0.0 --port 8080
+    mem_limit: 128m
+    memswap_limit: 192m
+    cpus: "0.20"
+    pids_limit: 64
     ports:
       - "127.0.0.1:8080:8080"
 
