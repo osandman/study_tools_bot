@@ -114,3 +114,9 @@ docker compose exec -T bot python -m pytest tests/ -v
   `ege_trainer` и роль `ege_trainer`, сеть `study_tools_bot_default`). `docker compose down` здесь останавливает
   и БД тренажёра; поднять только Postgres: `docker compose up -d postgres`. У всех баз инстанса снят CONNECT
   для PUBLIC (суперпользователя `study_bot` это не затрагивает).
+- **Контейнеры этого проекта созданы Docker Compose 5.1, а на сервере сейчас 5.6.** Compose 5.6 пишет в метку
+  `com.docker.compose.image` другой дайджест образа, поэтому первый `docker compose up` пересоздаст все три
+  контейнера, включая уже работающий Postgres: тренажёр на это время потеряет базу, данные в томе `pgdata`
+  сохранятся. Пересоздание случится один раз, после него `up` снова ничего не трогает. Проверить заранее:
+  `docker compose up -d --dry-run`. Чтобы просто запустить остановленные контейнеры, не пересоздавая их:
+  `docker start study_tools_bot_app study_tools_bot_admin`.
