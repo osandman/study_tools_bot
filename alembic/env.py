@@ -10,7 +10,8 @@ from database.models import User  # noqa: F401 — ensure models are loaded
 
 config = context.config
 
-if config.config_file_name is not None:
+# The bot applies migrations in-process (database/schema.py) and keeps its own logging setup.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata

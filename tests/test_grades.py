@@ -117,8 +117,8 @@ async def test_counter_updates_live_average_and_targets(tg_callback, session, re
         select(Subject).where(Subject.user_id == registered_user.id).order_by(Subject.name).limit(1)
     )
 
-    from bot.handlers.grades import _add_state
-    _add_state[tg_callback.from_user.id] = {
+    from bot.handlers.grades import _add_state, _counter_key
+    _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -162,8 +162,8 @@ async def test_counter_shows_diff_row_when_changed(tg_callback, session, registe
     session.add(Grade(user_id=registered_user.id, subject_id=subject.id, value=4, period=period))
     await session.commit()
 
-    from bot.handlers.grades import _add_state
-    _add_state[tg_callback.from_user.id] = {
+    from bot.handlers.grades import _add_state, _counter_key
+    _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 1, 3: 0, 2: 0, 1: 0},
@@ -186,8 +186,8 @@ async def test_counter_save(tg_callback, session, registered_user):
         select(Subject).where(Subject.user_id == registered_user.id).limit(1)
     )
 
-    from bot.handlers.grades import _add_state
-    _add_state[tg_callback.from_user.id] = {
+    from bot.handlers.grades import _add_state, _counter_key
+    _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -214,8 +214,8 @@ async def test_undo_last_save_restores_previous_state(tg_callback, session, regi
         select(Subject).where(Subject.user_id == registered_user.id).limit(1)
     )
 
-    from bot.handlers.grades import _add_state
-    _add_state[tg_callback.from_user.id] = {
+    from bot.handlers.grades import _add_state, _counter_key
+    _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -246,8 +246,8 @@ async def test_counter_cancel_returns_to_list(tg_callback, session, registered_u
         select(Subject).where(Subject.user_id == registered_user.id).limit(1)
     )
 
-    from bot.handlers.grades import _add_state
-    _add_state[tg_callback.from_user.id] = {
+    from bot.handlers.grades import _add_state, _counter_key
+    _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -271,8 +271,8 @@ async def test_counter_reset_discards_unsaved_changes_only(tg_callback, session,
     session.add(Grade(user_id=registered_user.id, subject_id=subject.id, value=4, period=period))
     await session.commit()
 
-    from bot.handlers.grades import _add_state
-    _add_state[tg_callback.from_user.id] = {
+    from bot.handlers.grades import _add_state, _counter_key
+    _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
         "period": period,
         "existing": {5: 0, 4: 1, 3: 1, 2: 0, 1: 0},

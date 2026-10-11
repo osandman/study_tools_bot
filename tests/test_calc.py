@@ -68,11 +68,13 @@ async def test_calc_period_switch(tg_callback, session, registered_user):
 
     await cb_summary_period(tg_callback, session)
 
+    # The summary only shows another period's statistics; the active period stays as it was
     await session.refresh(registered_user)
-    assert registered_user.active_period == "t2"
+    assert registered_user.active_period is None
 
     text = tg_callback.message.edit_text.call_args[0][0]
     assert "Сводка оценок" in text
+    assert "2 триместр" in text
 
 
 @pytest.mark.asyncio
@@ -95,5 +97,7 @@ async def test_old_calc_period_callback_still_works(tg_callback, session, regist
 
     await cb_summary_period(tg_callback, session)
 
+    text = tg_callback.message.edit_text.call_args[0][0]
+    assert "1 триместр" in text
     await session.refresh(registered_user)
-    assert registered_user.active_period == "t1"
+    assert registered_user.active_period is None

@@ -1,7 +1,7 @@
 """add admin user fields
 
 Revision ID: 20260430_000001
-Revises:
+Revises: 20260426_000000
 Create Date: 2026-04-30 12:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20260430_000001"
-down_revision = None
+down_revision = "20260426_000000"
 branch_labels = None
 depends_on = None
 

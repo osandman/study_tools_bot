@@ -3,14 +3,15 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeAllPrivateChats
 from loguru import logger
 
 from config import settings
-from database.base import engine, Base
-from database.models import User, Subject, Grade  # noqa: F401 — ensure all models are loaded
-from bot.middlewares import DatabaseMiddleware
+from database.base import engine
+from database.schema import apply_migrations
+from bot.middlewares import DatabaseMiddleware, IgnoreMessageNotModified
 from bot.handlers import get_handlers_router
 
 
@@ -25,10 +26,8 @@ def setup_logging():
 
 async def on_startup(bot: Bot):
     logger.info("Starting Study Tools Bot...")
-    # Create tables (for development; use alembic in production)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created/verified.")
+    await apply_migrations()
+    logger.info("Database migrations applied.")
     commands = [
         BotCommand(command="start", description="Начать работу"),
         BotCommand(command="subjects", description="Мои предметы"),
@@ -59,14 +58,18 @@ async def on_shutdown(bot: Bot):
     await engine.dispose()
 
 
-async def main():
-    setup_logging()
+BOT_DEFAULTS = DefaultBotProperties(parse_mode=ParseMode.HTML)
 
-    bot = Bot(
-        token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
 
+def build_bot(token: str, session: BaseSession | None = None) -> Bot:
+    """Bot with production defaults; e2e tests pass a Telegram API emulator as the session."""
+    bot = Bot(token=token, session=session, default=BOT_DEFAULTS)
+    bot.session.middleware(IgnoreMessageNotModified())
+    return bot
+
+
+def build_dispatcher() -> Dispatcher:
+    """Dispatcher wired exactly as in production; e2e tests reuse it instead of copying the wiring."""
     dp = Dispatcher()
 
     # Register middleware
@@ -79,6 +82,14 @@ async def main():
     # Lifecycle hooks
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
+    return dp
+
+
+async def main():
+    setup_logging()
+
+    bot = build_bot(settings.bot_token)
+    dp = build_dispatcher()
 
     # Start polling
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])

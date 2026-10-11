@@ -1,3 +1,5 @@
+from html import escape
+
 EXACT_SUBJECT_EMOJIS = {
     "Математика": "🧮",
     "Алгебра": "🧮",
@@ -50,3 +52,8 @@ def get_subject_emoji(name: str) -> str:
 
 def format_subject_name(name: str) -> str:
     return f"{get_subject_emoji(name)} {name}"
+
+
+def subject_title(name: str) -> str:
+    """Icon and name for message text sent with parse_mode=HTML: the name is user input."""
+    return escape(format_subject_name(name), quote=False)

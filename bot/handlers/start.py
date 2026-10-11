@@ -1,6 +1,10 @@
+from datetime import datetime, timezone
+from html import escape
+
 from aiogram import Router, types
 from aiogram.filters import CommandStart
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models.user import User
@@ -13,55 +17,64 @@ router = Router()
 async def cmd_start(message: types.Message, session: AsyncSession):
     """Handle /start command — auto-register or welcome back."""
     telegram_id = message.from_user.id
+    first_name = escape(message.from_user.first_name, quote=False)
 
     # Check if user exists
     result = await session.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
 
     if user is None:
-        # Register new user
+        # Register new user; registering is activity too (DatabaseMiddleware only sees existing users)
         user = User(
             telegram_id=telegram_id,
             username=message.from_user.username,
             first_name=message.from_user.first_name,
             last_name=message.from_user.last_name,
             language_code=message.from_user.language_code,
+            last_seen_at=datetime.now(timezone.utc),
         )
         session.add(user)
-        await session.flush()  # получаем user.id
+        try:
+            await session.flush()  # получаем user.id
+        except IntegrityError:
+            # Double-tapped /start: a parallel update has just registered this user.
+            await session.rollback()
+            result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+            user = result.scalar_one()
+        else:
+            # Create default subjects
+            for i, name in enumerate(DEFAULT_SUBJECTS):
+                session.add(Subject(user_id=user.id, name=name, is_default=True))
 
-        # Create default subjects
-        for i, name in enumerate(DEFAULT_SUBJECTS):
-            session.add(Subject(user_id=user.id, name=name, is_default=True))
-
-        await session.commit()
-
-        await message.answer(
-            f"👋 Привет, {message.from_user.first_name}!\n\n"
-            "Я — Study Tools Bot, твой помощник в учёбе.\n\n"
-            "Команды, с которых удобно начать:\n"
-            "/subjects — список предметов: добавить, переименовать или удалить\n"
-            "/grades — оценки по предметам: посмотреть, добавить и быстро поправить\n"
-            "/summary — сводка по всем предметам и прогноз до 4 или 5\n"
-            "/settings — выбор системы периодов и активного периода\n"
-            "/help — краткая памятка по боту",
-        )
-    else:
-        if user.is_blocked:
-            await message.answer("Ваш доступ к боту ограничен.")
-            return
-
-        # Update user info if changed
-        if user.username != message.from_user.username:
-            user.username = message.from_user.username
             await session.commit()
 
-        await message.answer(
-            f"С возвращением, {message.from_user.first_name}! 👋\n\n"
-            "Доступные команды:\n"
-            "/subjects — список предметов и управление ими\n"
-            "/grades — оценки по предметам и быстрые изменения\n"
-            "/summary — средний балл по всем предметам и прогноз\n"
-            "/settings — система периодов и активный период\n"
-            "/help — краткая справка",
-        )
+            await message.answer(
+                f"👋 Привет, {first_name}!\n\n"
+                "Я — Study Tools Bot, твой помощник в учёбе.\n\n"
+                "Команды, с которых удобно начать:\n"
+                "/subjects — список предметов: добавить, переименовать или удалить\n"
+                "/grades — оценки по предметам: посмотреть, добавить и быстро поправить\n"
+                "/summary — сводка по всем предметам и прогноз до 4 или 5\n"
+                "/settings — выбор системы периодов и активного периода\n"
+                "/help — краткая памятка по боту",
+            )
+            return
+
+    if user.is_blocked:
+        await message.answer("Ваш доступ к боту ограничен.")
+        return
+
+    # Update user info if changed
+    if user.username != message.from_user.username:
+        user.username = message.from_user.username
+        await session.commit()
+
+    await message.answer(
+        f"С возвращением, {first_name}! 👋\n\n"
+        "Доступные команды:\n"
+        "/subjects — список предметов и управление ими\n"
+        "/grades — оценки по предметам и быстрые изменения\n"
+        "/summary — средний балл по всем предметам и прогноз\n"
+        "/settings — система периодов и активный период\n"
+        "/help — краткая справка",
+    )

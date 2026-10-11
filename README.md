@@ -74,7 +74,9 @@ docker compose up --build -d
 - сервис `postgres`, контейнер `study_tools_bot_postgres`
 - сервис `admin`, контейнер `study_tools_bot_admin`, админка: `http://127.0.0.1:8080/admin/login`
 
-### 3) Применение миграций
+### 3) Миграции
+
+Бот применяет миграции Alembic сам при каждом старте, отдельный шаг не нужен. Вручную, если понадобится:
 
 ```bash
 docker compose exec -T bot alembic upgrade head
@@ -85,6 +87,9 @@ docker compose exec -T bot alembic upgrade head
 ```bash
 docker compose exec -T bot python -m pytest tests/ -v
 ```
+
+E2E-сценарии (настоящий диспетчер бота, эмулятор Telegram API, одноразовый Postgres) запускаются отдельно:
+`scripts/e2e.sh`. Подробности — в `tests/e2e/README.md`.
 
 ## Команды бота
 
@@ -108,8 +113,8 @@ docker compose exec -T bot python -m pytest tests/ -v
 
 ## Примечания
 
-- При старте бот также вызывает `Base.metadata.create_all()` для удобства локальной разработки.
-- В рабочих окружениях источником истины по схеме БД остаются миграции Alembic.
+- Источник истины по схеме БД — миграции Alembic: бот применяет их при старте (`database/schema.py`).
+  Новую колонку или таблицу добавляй миграцией; `alembic check` сверяет модели с миграциями.
 - **Контейнер `study_tools_bot_postgres` общий с ЕГЭ-тренажёром** (`~/projects/ege_trainer_bot`, своя БД
   `ege_trainer` и роль `ege_trainer`, сеть `study_tools_bot_default`). `docker compose down` здесь останавливает
   и БД тренажёра; поднять только Postgres: `docker compose up -d postgres`. У всех баз инстанса снят CONNECT

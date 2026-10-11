@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.utils.users import require_registered_message, require_registered_callback
 from bot.utils.periods import get_active_period
 from bot.utils.grades import grade_emoji
-from bot.utils.subjects import format_subject_name
+from bot.utils.subjects import subject_title
 from database.models import Subject, Grade
 from database.models.grade import get_periods
 
@@ -120,7 +120,7 @@ def _build_summary_text(subjects: list, period: str, periods: dict) -> str:
         total = sum(counts.values())
 
         if total == 0:
-            ungraded_names.append(format_subject_name(subj.name))
+            ungraded_names.append(subject_title(subj.name))
             continue
 
         normalized_counts = {v: counts.get(v, 0) for v in range(1, 6)}
@@ -130,7 +130,7 @@ def _build_summary_text(subjects: list, period: str, periods: dict) -> str:
 
         graded.append(
             {
-                "name": format_subject_name(subj.name),
+                "name": subject_title(subj.name),
                 "counts": normalized_counts,
                 "total": total,
                 "avg": avg,
@@ -232,10 +232,11 @@ async def cb_summary_period(callback: types.CallbackQuery, session: AsyncSession
     if not user:
         return
 
-    user.active_period = period
-    await session.commit()
-
+    # Only a view of another period's statistics: the active period is chosen in /settings.
     periods = get_periods(user.period_system)
+    if period not in periods:
+        await callback.answer("Неизвестный период")
+        return
 
     subjects = await session.scalars(
         select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)

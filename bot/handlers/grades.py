@@ -1,6 +1,8 @@
 import math
+from html import escape
+from typing import Any, Awaitable, Callable
 
-from aiogram import Router, types, F
+from aiogram import BaseMiddleware, Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, func
@@ -11,7 +13,7 @@ from database.models.grade import Grade, PERIOD_SYSTEMS, get_periods
 from bot.utils.users import require_registered_message, require_registered_callback
 from bot.utils.periods import get_active_period
 from bot.utils.grades import grade_emoji
-from bot.utils.subjects import format_subject_name
+from bot.utils.subjects import format_subject_name, subject_title
 
 router = Router()
 
@@ -89,15 +91,13 @@ def _format_counts_diff_row(add: dict[int, int]) -> str:
     return " ".join(f"{add[val]:+d}".ljust(3) if add.get(val, 0) else " " * 3 for val in [1, 2, 3, 4, 5])
 
 
-async def _render_grades_list(
-    message: types.Message,
+async def _grades_list_view(
     session: AsyncSession,
     user_id: int,
-    period_system: str,
     period: str,
     periods: dict,
-) -> None:
-    """Render the grades summary for the given period."""
+) -> tuple[str, types.InlineKeyboardMarkup | None]:
+    """Text and keyboard of the grades list, shared by /grades and the screens returning to it."""
     result = await session.execute(
         select(Subject)
         .where(Subject.user_id == user_id)
@@ -106,8 +106,7 @@ async def _render_grades_list(
     subjects = result.scalars().all()
 
     if not subjects:
-        await message.edit_text("📚 Нет предметов. Добавь через /subjects")
-        return
+        return "📚 Нет предметов. Добавь через /subjects", None
 
     period_label = periods.get(period, period)
     text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
@@ -131,28 +130,40 @@ async def _render_grades_list(
 
         if avg is not None:
             emoji = grade_emoji(avg)
-            text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
+            text += f"{emoji} {escape(subj.name, quote=False)} — {avg:.2f} ({count})\n"
         else:
-            text += f"⚪ {subj.name} —\n"
+            text += f"⚪ {escape(subj.name, quote=False)} —\n"
 
         kb.button(text=format_subject_name(subj.name), callback_data=f"subject:{subj.id}:{period}")
 
     # Overall average
-    if subjects:
-        overall_result = await session.execute(
-            select(func.avg(Grade.value))
-            .where(Grade.user_id == user_id, Grade.period == period)
-        )
-        overall_avg = overall_result.scalar()
-        if overall_avg is not None:
-            overall_emoji = grade_emoji(overall_avg)
-            text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
+    overall_result = await session.execute(
+        select(func.avg(Grade.value))
+        .where(Grade.user_id == user_id, Grade.period == period)
+    )
+    overall_avg = overall_result.scalar()
+    if overall_avg is not None:
+        overall_emoji = grade_emoji(overall_avg)
+        text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
 
     if has_undo:
         kb.adjust(1, *[2] * ((len(subjects) + 1) // 2))
     else:
         kb.adjust(*[2] * ((len(subjects) + 1) // 2))
-    await message.edit_text(text, reply_markup=kb.as_markup())
+    return text, kb.as_markup()
+
+
+async def _render_grades_list(
+    message: types.Message,
+    session: AsyncSession,
+    user_id: int,
+    period_system: str,
+    period: str,
+    periods: dict,
+) -> None:
+    """Render the grades summary for the given period."""
+    text, markup = await _grades_list_view(session, user_id, period, periods)
+    await message.edit_text(text, reply_markup=markup)
 
 
 # ─── /settings — настройки ────────────────────────────────────────────────
@@ -275,70 +286,21 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
     if user is None:
         return
     period = get_active_period(user)
-    periods_labels = get_periods(user.period_system)
-
-    result = await session.execute(
-        select(Subject)
-        .where(Subject.user_id == user.id)
-        .order_by(Subject.name)
-    )
-    subjects = result.scalars().all()
-
-    if not subjects:
-        await message.answer("📚 Нет предметов. Добавь через /subjects")
-        return
-
-    period_label = periods_labels.get(period, period)
-    text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
-    kb = InlineKeyboardBuilder()
-    has_undo = False
-    if _last_saved_action.get(user.id, {}).get("period") == period:
-        kb.button(text="↩️ Отменить последнее сохранение", callback_data="undo_last_save")
-        has_undo = True
-
-    for subj in subjects:
-        avg_result = await session.execute(
-            select(func.avg(Grade.value))
-            .where(Grade.subject_id == subj.id, Grade.user_id == user.id, Grade.period == period)
-        )
-        avg = avg_result.scalar()
-        count_result = await session.execute(
-            select(func.count(Grade.id))
-            .where(Grade.subject_id == subj.id, Grade.user_id == user.id, Grade.period == period)
-        )
-        count = count_result.scalar()
-
-        if avg is not None:
-            emoji = grade_emoji(avg)
-            text += f"{emoji} {subj.name} — {avg:.2f} ({count})\n"
-        else:
-            text += f"⚪ {subj.name} —\n"
-
-        kb.button(text=format_subject_name(subj.name), callback_data=f"subject:{subj.id}:{period}")
-
-    # Overall average
-    overall_result = await session.execute(
-        select(func.avg(Grade.value))
-        .where(Grade.user_id == user.id, Grade.period == period)
-    )
-    overall_avg = overall_result.scalar()
-    if overall_avg is not None:
-        overall_emoji = "🟢" if overall_avg >= 4.0 else "🟡" if overall_avg >= 3.0 else "🔴"
-        text += f"\n{overall_emoji} <b>Общий: {overall_avg:.2f}</b>\n"
-
-    if has_undo:
-        kb.adjust(1, *[2] * ((len(subjects) + 1) // 2))
-    else:
-        kb.adjust(*[2] * ((len(subjects) + 1) // 2))
-    await message.answer(text, reply_markup=kb.as_markup())
+    text, markup = await _grades_list_view(session, user.id, period, get_periods(user.period_system))
+    await message.answer(text, reply_markup=markup)
 
 
 
 # ─── Карточка предмета → сразу счетчики ──────────────────────────────────
 
-# In-memory state: {telegram_id: {subject_id, period, counts: {5:0, 4:0, 3:0, 2:0, 1:0}}}
-_add_state: dict[int, dict] = {}
+# In-memory counter state, one per counter message — a user may keep several /grades screens open:
+# {(telegram_id, message_id): {subject_id, period, existing: {5: 0, ...}, add: {5: 0, ...}}}
+_add_state: dict[tuple[int, int], dict] = {}
 _last_saved_action: dict[int, dict] = {}
+
+
+def _counter_key(callback: types.CallbackQuery) -> tuple[int, int]:
+    return callback.from_user.id, callback.message.message_id
 
 
 @router.callback_query(F.data.startswith("subject:"))
@@ -369,7 +331,7 @@ async def cb_subject_counter(callback: types.CallbackQuery, session: AsyncSessio
     )
     existing = {row[0]: row[1] for row in existing_result.all()}
 
-    _add_state[callback.from_user.id] = {
+    _add_state[_counter_key(callback)] = {
         "subject_id": subject_id,
         "period": period,
         "existing": {
@@ -382,12 +344,12 @@ async def cb_subject_counter(callback: types.CallbackQuery, session: AsyncSessio
         "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
     }
 
-    await _render_counter(callback.message, callback.from_user.id, subject.name)
+    await _render_counter(callback.message, _counter_key(callback), subject.name)
     await callback.answer()
 
 
-async def _render_counter(message: types.Message, telegram_id: int, subject_name: str):
-    state = _add_state.get(telegram_id)
+async def _render_counter(message: types.Message, key: tuple[int, int], subject_name: str):
+    state = _add_state.get(key)
     if not state:
         return
 
@@ -400,7 +362,7 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
     total_grades = exist_total + new_total
     has_changes = any(v != 0 for v in ad.values())
 
-    text = f"<b>{format_subject_name(subject_name)}</b>\n"
+    text = f"<b>{subject_title(subject_name)}</b>\n"
     if exist_total > 0:
         text += f"Всего: <b>{total_grades}</b>"
     else:
@@ -469,12 +431,13 @@ async def _render_counter(message: types.Message, telegram_id: int, subject_name
 
 @router.callback_query(F.data.startswith("cnt:"))
 async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession):
+    key = _counter_key(callback)
     user = await require_registered_callback(callback, session)
     if user is None:
-        _add_state.pop(callback.from_user.id, None)
+        _add_state.pop(key, None)
         return
 
-    state = _add_state.get(callback.from_user.id)
+    state = _add_state.get(key)
     if not state:
         await callback.answer("Сессия истекла, начни заново", )
         return
@@ -482,7 +445,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
     action = callback.data.split(":")[1]
 
     if action == "cancel":
-        _add_state.pop(callback.from_user.id, None)
+        _add_state.pop(key, None)
         await callback.answer("Отменено")
 
         period = state["period"]
@@ -504,7 +467,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
         )
         name = result.scalar() or "?"
         await callback.answer("↺ Изменения сброшены")
-        await _render_counter(callback.message, callback.from_user.id, name)
+        await _render_counter(callback.message, key, name)
         return
 
     if action == "noop":
@@ -546,7 +509,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
             added_grade_ids = [grade.id for grade in grades_to_add if grade.id is not None]
         await session.commit()
 
-        _add_state.pop(callback.from_user.id, None)
+        _add_state.pop(key, None)
         _last_saved_action[user.id] = {
             "subject_id": subject_id,
             "period": period,
@@ -595,7 +558,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
         select(Subject.name).where(Subject.id == state["subject_id"])
     )
     name = result.scalar() or "?"
-    await _render_counter(callback.message, callback.from_user.id, name)
+    await _render_counter(callback.message, key, name)
     await callback.answer()
 
 
@@ -655,7 +618,35 @@ async def cb_undo_last_save(callback: types.CallbackQuery, session: AsyncSession
 
 # ─── /subjects — управление предметами ────────────────────────────────────
 
+# Pending subject name input: {telegram_id: subject_id to rename, or -1 to add a new subject}
 _pending_renames: dict[int, int] = {}
+
+
+def _leaves_subject_input(event: types.TelegramObject) -> bool:
+    if isinstance(event, types.Message):
+        return not event.text or event.text.startswith("/")
+    if isinstance(event, types.CallbackQuery):
+        return event.data != "cancel_subject_edit"
+    return False
+
+
+class ResetPendingSubjectInput(BaseMiddleware):
+    """Drop a pending subject name input as soon as the user does anything else.
+
+    The input waits for the very next text message. A command or any other button means the user
+    left that step; without the reset, a stray message much later would silently rename a subject
+    or create a new one.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[types.TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if event.from_user is not None and _leaves_subject_input(event):
+            _pending_renames.pop(event.from_user.id, None)
+        return await handler(event, data)
 
 
 async def _remove_stale_reply_keyboard(message: types.Message) -> None:
@@ -667,21 +658,18 @@ async def _remove_stale_reply_keyboard(message: types.Message) -> None:
         pass
 
 
-async def _render_subjects_list(message: types.Message, session: AsyncSession, user_id: int) -> None:
+async def _show_subjects_list(
+    message: types.Message,
+    session: AsyncSession,
+    user_id: int,
+    telegram_id: int,
+    *,
+    edit: bool,
+) -> None:
     result = await session.execute(
         select(Subject).where(Subject.user_id == user_id).order_by(Subject.name)
     )
     subjects = result.scalars().all()
-
-    if not subjects:
-        kb = InlineKeyboardBuilder()
-        kb.button(text="➕ Добавить", callback_data="add_subject")
-        kb.adjust(1)
-        await message.edit_text(
-            "📚 Нет предметов. Нажми «➕ Добавить» ниже или просто пришли название нового предмета.",
-            reply_markup=kb.as_markup(),
-        )
-        return
 
     kb = InlineKeyboardBuilder()
     for subj in subjects:
@@ -689,7 +677,45 @@ async def _render_subjects_list(message: types.Message, session: AsyncSession, u
     kb.button(text="➕ Добавить", callback_data="add_subject")
     kb.adjust(2)
 
-    await message.edit_text("📚 <b>Твои предметы</b>", reply_markup=kb.as_markup())
+    if subjects:
+        text = "📚 <b>Твои предметы</b>"
+    else:
+        # The empty list doubles as the "add subject" prompt: its hint promises that just sending
+        # a name works.
+        _pending_renames[telegram_id] = -1
+        text = "📚 Нет предметов. Нажми «➕ Добавить» ниже или просто пришли название нового предмета."
+
+    send = message.edit_text if edit else message.answer
+    await send(text, reply_markup=kb.as_markup())
+
+
+async def _subject_card_view(
+    session: AsyncSession, user_id: int, subject: Subject
+) -> tuple[str, types.InlineKeyboardMarkup]:
+    count = await session.scalar(
+        select(func.count(Grade.id)).where(Grade.subject_id == subject.id, Grade.user_id == user_id)
+    )
+    text = f"<b>{subject_title(subject.name)}</b>\nОценок: {count}"
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Изменить", callback_data=f"edit_subject:{subject.id}")
+    kb.button(text="🗑 Удалить", callback_data=f"del_subject:{subject.id}")
+    kb.button(text="⬅️ Назад", callback_data="back_to_subjects")
+    kb.adjust(2, 1)
+    return text, kb.as_markup()
+
+
+async def _find_subject_by_name(
+    session: AsyncSession, user_id: int, name: str, *, exclude_id: int | None = None
+) -> Subject | None:
+    """Case-insensitive exact match, compared in Python: SQL ILIKE treats «_» and «%» as wildcards,
+    and SQL lower() folds Cyrillic only under a suitable database locale."""
+    result = await session.execute(select(Subject).where(Subject.user_id == user_id))
+    wanted = name.casefold()
+    return next(
+        (subj for subj in result.scalars() if subj.id != exclude_id and subj.name.casefold() == wanted),
+        None,
+    )
 
 
 @router.message(Command("subjects"))
@@ -699,23 +725,7 @@ async def cmd_subjects(message: types.Message, session: AsyncSession):
         return
 
     await _remove_stale_reply_keyboard(message)
-
-    result = await session.execute(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
-    )
-    subjects = result.scalars().all()
-
-    if not subjects:
-        await message.answer("📚 Нет предметов. Добавь командой /subjects или просто напиши название.")
-        return
-
-    kb = InlineKeyboardBuilder()
-    for subj in subjects:
-        kb.button(text=format_subject_name(subj.name), callback_data=f"subj:{subj.id}")
-    kb.button(text="➕ Добавить", callback_data="add_subject")
-    kb.adjust(2)
-
-    await message.answer("📚 <b>Твои предметы</b>", reply_markup=kb.as_markup())
+    await _show_subjects_list(message, session, user.id, message.from_user.id, edit=False)
 
 
 @router.callback_query(F.data.startswith("subj:"))
@@ -733,20 +743,8 @@ async def cb_subject_card(callback: types.CallbackQuery, session: AsyncSession):
         await callback.answer("Предмет не найден", )
         return
 
-    count_result = await session.execute(
-        select(func.count(Grade.id)).where(Grade.subject_id == subject_id, Grade.user_id == user.id)
-    )
-    count = count_result.scalar()
-
-    text = f"<b>{format_subject_name(subject.name)}</b>\nОценок: {count}"
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✏️ Изменить", callback_data=f"edit_subject:{subject_id}")
-    kb.button(text="🗑 Удалить", callback_data=f"del_subject:{subject_id}")
-    kb.button(text="⬅️ Назад", callback_data="back_to_subjects")
-    kb.adjust(2, 1)
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    text, markup = await _subject_card_view(session, user.id, subject)
+    await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 
 
@@ -756,7 +754,7 @@ async def cb_back_to_subjects(callback: types.CallbackQuery, session: AsyncSessi
     if user is None:
         return
 
-    await _render_subjects_list(callback.message, session, user.id)
+    await _show_subjects_list(callback.message, session, user.id, callback.from_user.id, edit=True)
     await callback.answer()
 
 
@@ -786,7 +784,7 @@ async def cb_edit_subject_prompt(callback: types.CallbackQuery, session: AsyncSe
     kb.adjust(1, 1)
 
     await callback.message.edit_text(
-        f"Текущее название: <b>{format_subject_name(subject.name)}</b>\n"
+        f"Текущее название: <b>{subject_title(subject.name)}</b>\n"
         "Нажми «Скопировать текущее имя», вставь и поправь только нужные буквы, затем отправь новое название сообщением:",
         reply_markup=kb.as_markup(),
     )
@@ -806,19 +804,8 @@ async def cb_cancel_subject_edit(callback: types.CallbackQuery, session: AsyncSe
         )
         subject = result.scalar_one_or_none()
         if subject:
-            count_result = await session.execute(
-                select(func.count(Grade.id)).where(Grade.subject_id == pending, Grade.user_id == user.id)
-            )
-            count = count_result.scalar()
-
-            text = f"<b>{format_subject_name(subject.name)}</b>\nОценок: {count}"
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✏️ Изменить", callback_data=f"edit_subject:{pending}")
-            kb.button(text="🗑 Удалить", callback_data=f"del_subject:{pending}")
-            kb.button(text="⬅️ Назад", callback_data="back_to_subjects")
-            kb.adjust(2, 1)
-
-            await callback.message.edit_text(text, reply_markup=kb.as_markup())
+            text, markup = await _subject_card_view(session, user.id, subject)
+            await callback.message.edit_text(text, reply_markup=markup)
             await callback.answer("Изменение отменено")
             return
 
@@ -844,7 +831,7 @@ async def cb_delete_subject(callback: types.CallbackQuery, session: AsyncSession
     await session.delete(subject)
     await session.commit()
 
-    await _render_subjects_list(callback.message, session, user.id)
+    await _show_subjects_list(callback.message, session, user.id, callback.from_user.id, edit=True)
     await callback.answer(f"🗑 Удалён: {name}", )
 
 
@@ -881,19 +868,17 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
     if user is None:
         return
 
+    shown = escape(text, quote=False)
     if pending == -1:
-        result = await session.execute(
-            select(Subject).where(Subject.user_id == user.id, Subject.name.ilike(text))
-        )
-        if result.scalar_one_or_none():
-            await message.answer(f"❌ Предмет «{text}» уже существует.")
+        if await _find_subject_by_name(session, user.id, text):
+            await message.answer(f"❌ Предмет «{shown}» уже существует.")
             return
 
         subject = Subject(user_id=user.id, name=text, is_default=False)
         session.add(subject)
         await session.commit()
         _pending_renames.pop(message.from_user.id, None)
-        await message.answer(f"✅ Предмет «{text}» добавлен!\n\nСписок: /subjects")
+        await message.answer(f"✅ Предмет «{shown}» добавлен!\n\nСписок: /subjects")
     else:
         result = await session.execute(
             select(Subject).where(Subject.id == pending, Subject.user_id == user.id)
@@ -904,19 +889,12 @@ async def handle_subject_text(message: types.Message, session: AsyncSession):
             await message.answer("❌ Предмет не найден.")
             return
 
-        dup_result = await session.execute(
-            select(Subject).where(
-                Subject.user_id == user.id,
-                Subject.name.ilike(text),
-                Subject.id != pending,
-            )
-        )
-        if dup_result.scalar_one_or_none():
-            await message.answer(f"❌ Предмет «{text}» уже существует.")
+        if await _find_subject_by_name(session, user.id, text, exclude_id=pending):
+            await message.answer(f"❌ Предмет «{shown}» уже существует.")
             return
 
         old_name = subject.name
         subject.name = text
         await session.commit()
         _pending_renames.pop(message.from_user.id, None)
-        await message.answer(f"✅ «{old_name}» → «{text}»\n\nСписок: /subjects")
+        await message.answer(f"✅ «{escape(old_name, quote=False)}» → «{shown}»\n\nСписок: /subjects")
