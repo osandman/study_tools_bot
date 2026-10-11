@@ -66,3 +66,27 @@ async def test_migrations_before_first_start(fresh_database):
     assert not await bot_start(fresh_database)
     assert not await alembic(fresh_database, "check"), "схема после миграций расходится с моделями"
 
+
+async def test_production_legacy_schema_is_cleaned_up(fresh_database):
+    """Рабочая база создавалась ранней версией моделей: лишние колонки в grades и период по умолчанию
+    'trimester_1', которого бот не знает. Старт бота приводит её к схеме моделей."""
+    assert not await alembic(fresh_database, "upgrade", "20260430_000001")
+    engine = create_async_engine(url_for(fresh_database))
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE grades ADD COLUMN grade_type varchar(50) DEFAULT 'other' NOT NULL, "
+            "ADD COLUMN description text, ALTER COLUMN period SET DEFAULT 'trimester_1'"
+        ))
+    await engine.dispose()
+
+    assert not await bot_start(fresh_database)
+
+    assert not await alembic(fresh_database, "check"), "схема после миграций расходится с моделями"
+    engine = create_async_engine(url_for(fresh_database))
+    async with engine.connect() as conn:
+        period_default = await conn.scalar(text(
+            "SELECT column_default FROM information_schema.columns "
+            "WHERE table_name = 'grades' AND column_name = 'period'"
+        ))
+    await engine.dispose()
+    assert period_default is None
