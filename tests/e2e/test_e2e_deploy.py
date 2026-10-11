@@ -90,3 +90,32 @@ async def test_production_legacy_schema_is_cleaned_up(fresh_database):
         ))
     await engine.dispose()
     assert period_default is None
+
+
+async def test_existing_grades_get_school_year_by_their_date(fresh_database):
+    """Оценки, поставленные до учебных лет, получают год по своей дате (год начинается 1 сентября),
+    а закрепление периода без года перестаёт действовать."""
+    assert not await alembic(fresh_database, "upgrade", "20261011_000002")
+    engine = create_async_engine(url_for(fresh_database))
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "INSERT INTO users (id, telegram_id, period_system, active_period, is_active, is_blocked) "
+            "VALUES (1, 100, 'trimesters', 't3', true, false)"
+        ))
+        await conn.execute(text("INSERT INTO subjects (id, user_id, name, is_default, sort_order) VALUES (1, 1, 'Алгебра', true, 0)"))
+        await conn.execute(text(
+            "INSERT INTO grades (user_id, subject_id, value, period, date) VALUES "
+            "(1, 1, 5, 't3', '2026-05-20'), (1, 1, 4, 't3', '2026-08-31'), (1, 1, 3, 't1', '2026-09-01')"
+        ))
+    await engine.dispose()
+
+    assert not await bot_start(fresh_database)
+
+    engine = create_async_engine(url_for(fresh_database))
+    async with engine.connect() as conn:
+        years = dict((await conn.execute(text("SELECT date::text, school_year FROM grades"))).all())
+        pinned_year = await conn.scalar(text("SELECT active_school_year FROM users"))
+    await engine.dispose()
+    assert years == {"2026-05-20": 2025, "2026-08-31": 2025, "2026-09-01": 2026}
+    assert pinned_year is None
+    assert not await alembic(fresh_database, "check"), "схема после миграций расходится с моделями"

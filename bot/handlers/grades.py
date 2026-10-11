@@ -9,7 +9,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models.subject import Subject
-from database.models.grade import Grade, PERIOD_SYSTEMS, get_periods
+from database.models.grade import (
+    Grade,
+    PERIOD_SYSTEMS,
+    current_school_year,
+    format_school_year,
+    get_periods,
+)
 from bot.utils.users import require_registered_message, require_registered_callback
 from bot.utils.periods import get_active_period
 from bot.utils.grades import grade_emoji
@@ -94,6 +100,7 @@ def _format_counts_diff_row(add: dict[int, int]) -> str:
 async def _grades_list_view(
     session: AsyncSession,
     user_id: int,
+    school_year: int,
     period: str,
     periods: dict,
 ) -> tuple[str, types.InlineKeyboardMarkup | None]:
@@ -109,22 +116,33 @@ async def _grades_list_view(
         return "📚 Нет предметов. Добавь через /subjects", None
 
     period_label = periods.get(period, period)
-    text = f"📊 <b>Оценки</b>\n📅 {period_label}\n\n"
+    text = f"📊 <b>Оценки</b>\n📅 {period_label} · {format_school_year(school_year)}\n\n"
     kb = InlineKeyboardBuilder()
     has_undo = False
-    if _last_saved_action.get(user_id, {}).get("period") == period:
+    last_save = _last_saved_action.get(user_id, {})
+    if (last_save.get("school_year"), last_save.get("period")) == (school_year, period):
         kb.button(text="↩️ Отменить последнее сохранение", callback_data="undo_last_save")
         has_undo = True
 
     for subj in subjects:
         avg_result = await session.execute(
             select(func.avg(Grade.value))
-            .where(Grade.subject_id == subj.id, Grade.user_id == user_id, Grade.period == period)
+            .where(
+                Grade.subject_id == subj.id,
+                Grade.user_id == user_id,
+                Grade.school_year == school_year,
+                Grade.period == period,
+            )
         )
         avg = avg_result.scalar()
         count_result = await session.execute(
             select(func.count(Grade.id))
-            .where(Grade.subject_id == subj.id, Grade.user_id == user_id, Grade.period == period)
+            .where(
+                Grade.subject_id == subj.id,
+                Grade.user_id == user_id,
+                Grade.school_year == school_year,
+                Grade.period == period,
+            )
         )
         count = count_result.scalar()
 
@@ -134,12 +152,15 @@ async def _grades_list_view(
         else:
             text += f"⚪ {escape(subj.name, quote=False)} —\n"
 
-        kb.button(text=format_subject_name(subj.name), callback_data=f"subject:{subj.id}:{period}")
+        kb.button(
+            text=format_subject_name(subj.name),
+            callback_data=f"subject:{subj.id}:{school_year}:{period}",
+        )
 
     # Overall average
     overall_result = await session.execute(
         select(func.avg(Grade.value))
-        .where(Grade.user_id == user_id, Grade.period == period)
+        .where(Grade.user_id == user_id, Grade.school_year == school_year, Grade.period == period)
     )
     overall_avg = overall_result.scalar()
     if overall_avg is not None:
@@ -157,28 +178,25 @@ async def _render_grades_list(
     message: types.Message,
     session: AsyncSession,
     user_id: int,
-    period_system: str,
+    school_year: int,
     period: str,
     periods: dict,
 ) -> None:
     """Render the grades summary for the given period."""
-    text, markup = await _grades_list_view(session, user_id, period, periods)
+    text, markup = await _grades_list_view(session, user_id, school_year, period, periods)
     await message.edit_text(text, reply_markup=markup)
 
 
 # ─── /settings — настройки ────────────────────────────────────────────────
 
-@router.message(Command("settings"))
-async def cmd_settings(message: types.Message, session: AsyncSession):
-    user = await require_registered_message(message, session)
-    if user is None:
-        return
+def _settings_view(user) -> tuple[str, types.InlineKeyboardMarkup]:
     system_label = PERIOD_SYSTEMS[user.period_system]["name"]
     periods = get_periods(user.period_system)
     active = get_active_period(user)
 
     text = (
         f"⚙️ <b>Настройки</b>\n\n"
+        f"Учебный год: <b>{format_school_year(current_school_year())}</b>\n"
         f"Система периодов: <b>{system_label}</b>\n"
         f"Активный период: <b>{periods.get(active, active)}</b>"
     )
@@ -193,8 +211,16 @@ async def cmd_settings(message: types.Message, session: AsyncSession):
         kb.button(text=f"{marker}{p_label}", callback_data=f"set_active_period:{p_key}")
     kb.button(text="🔄 Авто", callback_data="set_active_period:auto")
     kb.adjust(2, 3)
+    return text, kb.as_markup()
 
-    await message.answer(text, reply_markup=kb.as_markup())
+
+@router.message(Command("settings"))
+async def cmd_settings(message: types.Message, session: AsyncSession):
+    user = await require_registered_message(message, session)
+    if user is None:
+        return
+    text, markup = _settings_view(user)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("set_period:"))
@@ -209,30 +235,11 @@ async def cb_set_period(callback: types.CallbackQuery, session: AsyncSession):
         return
     user.period_system = system
     user.active_period = None  # reset when changing system
+    user.active_school_year = None
     await session.commit()
 
-    system_label = PERIOD_SYSTEMS[system]["name"]
-    periods = get_periods(system)
-    active = get_active_period(user)
-
-    text = (
-        f"⚙️ <b>Настройки</b>\n\n"
-        f"Система периодов: <b>{system_label}</b>\n"
-        f"Активный период: <b>{periods.get(active, active)}</b>"
-    )
-
-    kb = InlineKeyboardBuilder()
-    for key, cfg in PERIOD_SYSTEMS.items():
-        marker = "✅ " if key == system else ""
-        kb.button(text=f"{marker}{cfg['name']}", callback_data=f"set_period:{key}")
-
-    for p_key, p_label in periods.items():
-        marker = "✅ " if p_key == active else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"set_active_period:{p_key}")
-    kb.button(text="🔄 Авто", callback_data="set_active_period:auto")
-    kb.adjust(2, 3)
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    text, markup = _settings_view(user)
+    await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 
 
@@ -245,36 +252,19 @@ async def cb_set_active_period(callback: types.CallbackQuery, session: AsyncSess
 
     if value == "auto":
         user.active_period = None
+        user.active_school_year = None
     else:
         periods = get_periods(user.period_system)
         if value not in periods:
             await callback.answer("Неизвестный период")
             return
+        # The choice holds for this school year only; the next one starts in auto mode.
         user.active_period = value
+        user.active_school_year = current_school_year()
     await session.commit()
 
-    periods = get_periods(user.period_system)
-    active = get_active_period(user)
-    system_label = PERIOD_SYSTEMS[user.period_system]["name"]
-
-    text = (
-        f"⚙️ <b>Настройки</b>\n\n"
-        f"Система периодов: <b>{system_label}</b>\n"
-        f"Активный период: <b>{periods.get(active, active)}</b>"
-    )
-
-    kb = InlineKeyboardBuilder()
-    for key, cfg in PERIOD_SYSTEMS.items():
-        marker = "✅ " if key == user.period_system else ""
-        kb.button(text=f"{marker}{cfg['name']}", callback_data=f"set_period:{key}")
-
-    for p_key, p_label in periods.items():
-        marker = "✅ " if p_key == active else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"set_active_period:{p_key}")
-    kb.button(text="🔄 Авто", callback_data="set_active_period:auto")
-    kb.adjust(2, 3)
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    text, markup = _settings_view(user)
+    await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
 
 
@@ -286,7 +276,9 @@ async def cmd_grades(message: types.Message, session: AsyncSession):
     if user is None:
         return
     period = get_active_period(user)
-    text, markup = await _grades_list_view(session, user.id, period, get_periods(user.period_system))
+    text, markup = await _grades_list_view(
+        session, user.id, current_school_year(), period, get_periods(user.period_system)
+    )
     await message.answer(text, reply_markup=markup)
 
 
@@ -305,16 +297,22 @@ def _counter_key(callback: types.CallbackQuery) -> tuple[int, int]:
 
 @router.callback_query(F.data.startswith("subject:"))
 async def cb_subject_counter(callback: types.CallbackQuery, session: AsyncSession):
-    """Open subject card directly as the counter interface."""
+    """Open subject card directly as the counter interface.
+
+    callback_data is subject:{id}:{school_year}:{period}; messages sent before school years existed
+    carry subject:{id}:{period} or subject:{id} and mean the current school year.
+    """
     parts = callback.data.split(":")
     subject_id = int(parts[1])
-    period = parts[2] if len(parts) > 2 else None
     user = await require_registered_callback(callback, session)
     if user is None:
         return
 
-    if period is None:
-        period = get_active_period(user)
+    school_year, period = current_school_year(), get_active_period(user)
+    if len(parts) == 4:
+        school_year, period = int(parts[2]), parts[3]
+    elif len(parts) == 3:
+        period = parts[2]
 
     result = await session.execute(
         select(Subject).where(Subject.id == subject_id, Subject.user_id == user.id)
@@ -326,13 +324,19 @@ async def cb_subject_counter(callback: types.CallbackQuery, session: AsyncSessio
 
     existing_result = await session.execute(
         select(Grade.value, func.count(Grade.id))
-        .where(Grade.subject_id == subject_id, Grade.user_id == user.id, Grade.period == period)
+        .where(
+            Grade.subject_id == subject_id,
+            Grade.user_id == user.id,
+            Grade.school_year == school_year,
+            Grade.period == period,
+        )
         .group_by(Grade.value)
     )
     existing = {row[0]: row[1] for row in existing_result.all()}
 
     _add_state[_counter_key(callback)] = {
         "subject_id": subject_id,
+        "school_year": school_year,
         "period": period,
         "existing": {
             5: existing.get(5, 0),
@@ -448,13 +452,12 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
         _add_state.pop(key, None)
         await callback.answer("Отменено")
 
-        period = state["period"]
         await _render_grades_list(
             callback.message,
             session,
             user.id,
-            user.period_system,
-            period,
+            state["school_year"],
+            state["period"],
             get_periods(user.period_system),
         )
         return
@@ -476,6 +479,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
 
     if action == "save":
         subject_id = state["subject_id"]
+        school_year = state["school_year"]
         period = state["period"]
         add_counts = state["add"]
 
@@ -489,13 +493,15 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
                         user_id=user.id,
                         subject_id=subject_id,
                         value=val,
+                        school_year=school_year,
                         period=period,
                     ))
             elif count < 0:
                 to_delete = await session.execute(
                     select(Grade)
                     .where(Grade.subject_id == subject_id, Grade.user_id == user.id,
-                           Grade.period == period, Grade.value == val)
+                           Grade.school_year == school_year, Grade.period == period,
+                           Grade.value == val)
                     .order_by(Grade.created_at.desc())
                     .limit(abs(count))
                 )
@@ -512,6 +518,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
         _add_state.pop(key, None)
         _last_saved_action[user.id] = {
             "subject_id": subject_id,
+            "school_year": school_year,
             "period": period,
             "added_grade_ids": added_grade_ids,
             "deleted_values": deleted_values,
@@ -534,7 +541,7 @@ async def cb_counter_action(callback: types.CallbackQuery, session: AsyncSession
             callback.message,
             session,
             user.id,
-            user.period_system,
+            school_year,
             period,
             get_periods(user.period_system),
         )
@@ -574,6 +581,7 @@ async def cb_undo_last_save(callback: types.CallbackQuery, session: AsyncSession
         return
 
     subject_id = action["subject_id"]
+    school_year = action["school_year"]
     period = action["period"]
     added_grade_ids = action.get("added_grade_ids", [])
     deleted_values = action.get("deleted_values", [])
@@ -599,6 +607,7 @@ async def cb_undo_last_save(callback: types.CallbackQuery, session: AsyncSession
             user_id=user.id,
             subject_id=subject_id,
             value=value,
+            school_year=school_year,
             period=period,
         ))
 
@@ -610,7 +619,7 @@ async def cb_undo_last_save(callback: types.CallbackQuery, session: AsyncSession
         callback.message,
         session,
         user.id,
-        user.period_system,
+        school_year,
         period,
         get_periods(user.period_system),
     )

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, String, Boolean, DateTime, func
+from sqlalchemy import BigInteger, SmallInteger, String, Boolean, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database.base import Base
@@ -17,6 +17,8 @@ class User(Base):
     language_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     period_system: Mapped[str] = mapped_column(String(20), default="trimesters")  # trimesters or quarters
     active_period: Mapped[str | None] = mapped_column(String(20), nullable=True)  # user-selected period override
+    # School year the override was chosen in: it expires when a new school year starts
+    active_school_year: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

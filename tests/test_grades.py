@@ -20,6 +20,7 @@ from bot.handlers.grades import (
     handle_subject_text,
 )
 from bot.utils.periods import get_active_period
+from database.models.grade import current_school_year
 from bot.utils.subjects import format_subject_name
 
 
@@ -120,6 +121,7 @@ async def test_counter_updates_live_average_and_targets(tg_callback, session, re
     from bot.handlers.grades import _add_state, _counter_key
     _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
+        "school_year": current_school_year(),
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
         "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -165,6 +167,7 @@ async def test_counter_shows_diff_row_when_changed(tg_callback, session, registe
     from bot.handlers.grades import _add_state, _counter_key
     _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
+        "school_year": current_school_year(),
         "period": period,
         "existing": {5: 0, 4: 1, 3: 0, 2: 0, 1: 0},
         "add": {5: 1, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -189,6 +192,7 @@ async def test_counter_save(tg_callback, session, registered_user):
     from bot.handlers.grades import _add_state, _counter_key
     _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
+        "school_year": current_school_year(),
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
         "add": {5: 2, 4: 1, 3: 0, 2: 0, 1: 0},
@@ -217,6 +221,7 @@ async def test_undo_last_save_restores_previous_state(tg_callback, session, regi
     from bot.handlers.grades import _add_state, _counter_key
     _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
+        "school_year": current_school_year(),
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
         "add": {5: 1, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -249,6 +254,7 @@ async def test_counter_cancel_returns_to_list(tg_callback, session, registered_u
     from bot.handlers.grades import _add_state, _counter_key
     _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
+        "school_year": current_school_year(),
         "period": period,
         "existing": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
         "add": {5: 0, 4: 0, 3: 0, 2: 0, 1: 0},
@@ -274,6 +280,7 @@ async def test_counter_reset_discards_unsaved_changes_only(tg_callback, session,
     from bot.handlers.grades import _add_state, _counter_key
     _add_state[_counter_key(tg_callback)] = {
         "subject_id": subject.id,
+        "school_year": current_school_year(),
         "period": period,
         "existing": {5: 0, 4: 1, 3: 1, 2: 0, 1: 0},
         "add": {5: 1, 4: -1, 3: 0, 2: 0, 1: 0},

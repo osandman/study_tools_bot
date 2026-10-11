@@ -13,7 +13,7 @@ from bot.utils.periods import get_active_period
 from bot.utils.grades import grade_emoji
 from bot.utils.subjects import subject_title
 from database.models import Subject, Grade
-from database.models.grade import get_periods
+from database.models.grade import current_school_year, format_school_year, get_periods
 
 router = Router()
 
@@ -105,10 +105,10 @@ def _format_forecast_lines(forecast: dict[int, list[tuple[int, int]]], current_r
     return lines
 
 
-def _build_summary_text(subjects: list, period: str, periods: dict) -> str:
+def _build_summary_text(subjects: list, school_year: int, period: str, periods: dict) -> str:
     """Build the summary message text."""
     period_label = periods.get(period, period)
-    text = f"📊 <b>Сводка оценок</b>\n📅 {period_label}\n\n"
+    text = f"📊 <b>Сводка оценок</b>\n📅 {period_label} · {format_school_year(school_year)}\n\n"
 
     graded = []
     ungraded_names = []
@@ -182,88 +182,129 @@ def _build_summary_text(subjects: list, period: str, periods: dict) -> str:
     return text
 
 
+async def _summary_years(session: AsyncSession, user_id: int, shown_year: int) -> list[int]:
+    """School years the summary can switch between: those with grades, plus the current one."""
+    years = await session.scalars(select(Grade.school_year).where(Grade.user_id == user_id).distinct())
+    return sorted(set(years.all()) | {current_school_year(), shown_year})
+
+
+async def _latest_period_with_grades(session: AsyncSession, user, school_year: int) -> str:
+    periods = list(get_periods(user.period_system))
+    graded = set(
+        (
+            await session.scalars(
+                select(Grade.period)
+                .where(Grade.user_id == user.id, Grade.school_year == school_year)
+                .distinct()
+            )
+        ).all()
+    )
+    return next((key for key in reversed(periods) if key in graded), periods[0])
+
+
+async def _summary_view(
+    session: AsyncSession, user, school_year: int, period: str
+) -> tuple[str, types.InlineKeyboardMarkup]:
+    periods = get_periods(user.period_system)
+
+    subjects = await session.scalars(
+        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
+    )
+    subjects = subjects.all()
+
+    subj_ids = [s.id for s in subjects]
+    grade_rows = await session.execute(
+        select(Grade.subject_id, Grade.value, func.count(Grade.id))
+        .where(
+            Grade.user_id == user.id,
+            Grade.school_year == school_year,
+            Grade.period == period,
+            Grade.subject_id.in_(subj_ids),
+        )
+        .group_by(Grade.subject_id, Grade.value)
+    )
+    grade_map = {}
+    for row in grade_rows.all():
+        sid, val, cnt = row
+        grade_map.setdefault(sid, []).append((val, cnt))
+
+    for subj in subjects:
+        subj._grade_rows = grade_map.get(subj.id, [])
+
+    text = _build_summary_text(subjects, school_year, period, periods)
+
+    kb = InlineKeyboardBuilder()
+    for p_key, p_label in periods.items():
+        marker = "• " if p_key == period else ""
+        kb.button(text=f"{marker}{p_label}", callback_data=f"summary_period:{school_year}:{p_key}")
+
+    # Past school years are only viewed here; /grades always works with the current one.
+    years = await _summary_years(session, user.id, school_year)
+    position = years.index(school_year)
+    year_buttons = 0
+    if position > 0:
+        previous = years[position - 1]
+        kb.button(text=f"◀ {format_school_year(previous)}", callback_data=f"summary_year:{previous}")
+        year_buttons += 1
+    if position < len(years) - 1:
+        following = years[position + 1]
+        kb.button(text=f"{format_school_year(following)} ▶", callback_data=f"summary_year:{following}")
+        year_buttons += 1
+    kb.adjust(len(periods), *([year_buttons] if year_buttons else []))
+    return text, kb.as_markup()
+
+
 @router.message(Command("summary"))
 async def cmd_summary(message: types.Message, session: AsyncSession):
     user = await require_registered_message(message, session)
     if not user:
         return
 
-    period = get_active_period(user)
-    periods = get_periods(user.period_system)
-
-    subjects = await session.scalars(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
-    )
-    subjects = subjects.all()
-
-    if not subjects:
+    has_subjects = await session.scalar(select(func.count(Subject.id)).where(Subject.user_id == user.id))
+    if not has_subjects:
         await message.answer("Нет предметов. Добавьте через /subjects")
         return
 
-    subj_ids = [s.id for s in subjects]
-    grade_rows = await session.execute(
-        select(Grade.subject_id, Grade.value, func.count(Grade.id))
-        .where(Grade.user_id == user.id, Grade.period == period, Grade.subject_id.in_(subj_ids))
-        .group_by(Grade.subject_id, Grade.value)
-    )
-    grade_map = {}
-    for row in grade_rows.all():
-        sid, val, cnt = row
-        grade_map.setdefault(sid, []).append((val, cnt))
-
-    for subj in subjects:
-        subj._grade_rows = grade_map.get(subj.id, [])
-
-    text = _build_summary_text(subjects, period, periods)
-
-    kb = InlineKeyboardBuilder()
-    for p_key, p_label in periods.items():
-        marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"summary_period:{p_key}")
-    kb.adjust(len(periods))
-
-    await message.answer(text, reply_markup=kb.as_markup())
+    text, markup = await _summary_view(session, user, current_school_year(), get_active_period(user))
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("summary_period:") | F.data.startswith("calc_period:"))
 async def cb_summary_period(callback: types.CallbackQuery, session: AsyncSession):
-    period = callback.data.split(":")[1]
+    """summary_period:{school_year}:{period}. Messages sent before school years existed carry
+    summary_period:{period} or calc_period:{period} and mean the current school year."""
+    parts = callback.data.split(":")
     user = await require_registered_callback(callback, session)
     if not user:
         return
 
+    if len(parts) == 3:
+        school_year, period = int(parts[1]), parts[2]
+    else:
+        school_year, period = current_school_year(), parts[1]
+
     # Only a view of another period's statistics: the active period is chosen in /settings.
-    periods = get_periods(user.period_system)
-    if period not in periods:
+    if period not in get_periods(user.period_system):
         await callback.answer("Неизвестный период")
         return
 
-    subjects = await session.scalars(
-        select(Subject).where(Subject.user_id == user.id).order_by(Subject.name)
-    )
-    subjects = subjects.all()
+    text, markup = await _summary_view(session, user, school_year, period)
+    await callback.message.edit_text(text, reply_markup=markup)
+    await callback.answer()
 
-    subj_ids = [s.id for s in subjects]
-    grade_rows = await session.execute(
-        select(Grade.subject_id, Grade.value, func.count(Grade.id))
-        .where(Grade.user_id == user.id, Grade.period == period, Grade.subject_id.in_(subj_ids))
-        .group_by(Grade.subject_id, Grade.value)
-    )
-    grade_map = {}
-    for row in grade_rows.all():
-        sid, val, cnt = row
-        grade_map.setdefault(sid, []).append((val, cnt))
 
-    for subj in subjects:
-        subj._grade_rows = grade_map.get(subj.id, [])
+@router.callback_query(F.data.startswith("summary_year:"))
+async def cb_summary_year(callback: types.CallbackQuery, session: AsyncSession):
+    school_year = int(callback.data.split(":")[1])
+    user = await require_registered_callback(callback, session)
+    if not user:
+        return
 
-    text = _build_summary_text(subjects, period, periods)
+    if school_year == current_school_year():
+        period = get_active_period(user)
+    else:
+        period = await _latest_period_with_grades(session, user, school_year)
 
-    kb = InlineKeyboardBuilder()
-    for p_key, p_label in periods.items():
-        marker = "• " if p_key == period else ""
-        kb.button(text=f"{marker}{p_label}", callback_data=f"summary_period:{p_key}")
-    kb.adjust(len(periods))
-
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+    text, markup = await _summary_view(session, user, school_year, period)
+    await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()

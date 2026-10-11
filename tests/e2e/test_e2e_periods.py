@@ -49,10 +49,10 @@ MONTHS = {1: "январь", 2: "февраль", 3: "март", 4: "апрел�
     + [("Триместры", m, f"{t} триместр") for m, t in TRIMESTERS.items()],
     ids=lambda value: MONTHS.get(value, value) if isinstance(value, int) else value,
 )
-async def test_auto_period_follows_school_calendar(e2e, school_month, system, month, expected):
+async def test_auto_period_follows_school_calendar(e2e, today, system, month, expected):
     """Режим «Авто» выбирает период по школьному календарю: 1 четверть — сентябрь–октябрь,
     2 — ноябрь–декабрь, 3 — январь–март, 4 — апрель–май; триместры по три месяца."""
-    school_month(month)
+    today(2026 if month >= 9 else 2027, month)
     anya = e2e.user("Аня")
     await anya.send("/start")
     await anya.send("/settings")

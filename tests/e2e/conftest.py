@@ -4,7 +4,7 @@
 """
 
 import os
-from datetime import datetime
+from datetime import date
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -45,21 +45,14 @@ async def clean_database(migrated_schema):
 
 
 @pytest.fixture(autouse=True)
-def school_month(monkeypatch):
-    """«Сегодня» для автовыбора периода; по умолчанию середина октября 2026."""
+def today(monkeypatch):
+    """«Сегодня» по школьному календарю (school_today — единые часы бота); по умолчанию 15 октября 2026."""
 
-    def set_month(month: int) -> None:
-        year = 2026 if month >= 9 else 2027
+    def set_today(year: int, month: int, day: int = 15) -> None:
+        monkeypatch.setattr(grade_module, "school_today", lambda: date(year, month, day))
 
-        class FrozenDatetime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return cls(year, month, 15, 12, 0, tzinfo=tz)
-
-        monkeypatch.setattr(grade_module, "datetime", FrozenDatetime)
-
-    set_month(10)
-    return set_month
+    set_today(2026, 10)
+    return set_today
 
 
 @pytest.fixture
